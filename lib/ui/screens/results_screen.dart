@@ -116,6 +116,13 @@ class _ResultsScreenState extends State<ResultsScreen> {
                       formatDuration(record.durationMs / 1000)),
                   _kv('Mode', _modeLabel()),
                   _kv('Output codec', record.videoCodec),
+                  if (record.outputWidth != null && record.outputHeight != null)
+                    _kv('Output resolution',
+                        '${record.outputWidth} × ${record.outputHeight}${record.outputAspectRatio != null ? ' (${record.outputAspectRatio})' : ''}'),
+                  if (record.outputFps != null)
+                    _kv('Output frame rate', '${record.outputFps!.toStringAsFixed(1)} fps'),
+                  if (record.fitPolicy != null && record.fitPolicy != VideoFitPolicy.preserveOriginal)
+                    _kv('Framing / Fit', record.fitPolicy!.label),
                   if (record.hdrStatus != null)
                     _kv('Color & HDR', record.hdrStatus!,
                         highlight: record.hdrMode != null && record.hdrMode != HdrMode.off,

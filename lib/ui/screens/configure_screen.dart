@@ -45,6 +45,11 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
   List<CompressionPreset> _presets = [];
   CompressionPreset? _selectedPreset;
   late TextEditingController _targetSizeTextController;
+  late TextEditingController _customAspectWController;
+  late TextEditingController _customAspectHController;
+  late TextEditingController _customResWController;
+  late TextEditingController _customResHController;
+  bool _isCustomResolution = false;
   bool _showAdvancedSettings = false;
   bool _isLosslessMode = false;
 
@@ -59,6 +64,21 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
           ? (_settings.targetSizeBytes! / (1024 * 1024)).toStringAsFixed(1)
           : '',
     );
+    _customAspectWController = TextEditingController(
+      text: _settings.customAspectRatioWidth?.toString() ?? '',
+    );
+    _customAspectHController = TextEditingController(
+      text: _settings.customAspectRatioHeight?.toString() ?? '',
+    );
+    _customResWController = TextEditingController(
+      text: _settings.targetWidth?.toString() ?? '',
+    );
+    _customResHController = TextEditingController(
+      text: _settings.targetHeight?.toString() ?? '',
+    );
+    _isCustomResolution = _settings.targetWidth != null &&
+        _settings.targetHeight != null &&
+        ResolutionPreset.findByDimensions(_settings.targetWidth, _settings.targetHeight) == null;
 
     _loadCapabilitiesAndPresets();
   }
@@ -66,6 +86,10 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
   @override
   void dispose() {
     _targetSizeTextController.dispose();
+    _customAspectWController.dispose();
+    _customAspectHController.dispose();
+    _customResWController.dispose();
+    _customResHController.dispose();
     super.dispose();
   }
 
@@ -112,8 +136,12 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
   // -------------------------------------------------- Profile handling --
   void _applyProfile(CompressionProfile profile) {
     final video = widget.media.videoStream!;
-    final sourceW = video.width ?? 1920;
-    final sourceH = video.height ?? 1080;
+    final int sourceW = (video.displayWidth != null && video.displayWidth! > 0)
+        ? video.displayWidth!
+        : (video.width ?? 1920);
+    final int sourceH = (video.displayHeight != null && video.displayHeight! > 0)
+        ? video.displayHeight!
+        : (video.height ?? 1080);
 
     int? targetW;
     int? targetH;
@@ -158,22 +186,29 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
       clearResolution: (targetW == sourceW && targetH == sourceH),
       clearTargetSize: true,
       clearBitrate: true,
+      aspectRatio: AspectRatioOption.original,
+      fitPolicy: VideoFitPolicy.preserveOriginal,
     ));
     setState(() {
       _selectedPreset = null;
       _isLosslessMode = false;
+      _isCustomResolution = false;
     });
   }
 
   // --------------------------------------------------- Preset handling --
   void _applyPreset(CompressionPreset preset) {
     final video = widget.media.videoStream!;
-    final sourceW = video.width ?? 1920;
-    final sourceH = video.height ?? 1080;
+    final int sourceW = (video.displayWidth != null && video.displayWidth! > 0)
+        ? video.displayWidth!
+        : (video.width ?? 1920);
+    final int sourceH = (video.displayHeight != null && video.displayHeight! > 0)
+        ? video.displayHeight!
+        : (video.height ?? 1080);
 
-    int? targetW;
-    int? targetH;
-    if (preset.targetHeight != null) {
+    int? targetW = preset.targetWidth;
+    int? targetH = preset.targetHeight;
+    if (preset.targetHeight != null && preset.targetWidth == null) {
       final resPreset = ResolutionPreset.all.firstWhere(
         (p) => p.standardHeight == preset.targetHeight,
         orElse: () => ResolutionPreset.p1080,
@@ -193,7 +228,7 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
       targetSizeBytes: preset.targetSizeBytes,
       targetWidth: targetW,
       targetHeight: targetH,
-      clearResolution: targetW == null,
+      clearResolution: targetW == null && targetH == null,
       frameRate: preset.frameRate,
       clearFrameRate: preset.frameRate == null,
       audio: preset.audio,
@@ -203,11 +238,18 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
       speedPreset: preset.speedPreset,
       hdrMode: preset.hdrMode ?? _settings.hdrMode,
       hdrIntensity: preset.hdrIntensity ?? _settings.hdrIntensity,
+      aspectRatio: preset.aspectRatio ?? AspectRatioOption.original,
+      customAspectRatioWidth: preset.customAspectRatioWidth,
+      customAspectRatioHeight: preset.customAspectRatioHeight,
+      fitPolicy: preset.fitPolicy ?? VideoFitPolicy.preserveOriginal,
       clearBitrate: true,
     ));
     setState(() {
       _selectedPreset = preset;
       _isLosslessMode = false;
+      _isCustomResolution = targetW != null &&
+          targetH != null &&
+          ResolutionPreset.findByDimensions(targetW, targetH) == null;
     });
   }
 
@@ -278,8 +320,8 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
             _buildTargetSizeSection(theme, media),
             const SizedBox(height: 16),
 
-            // 6. Output Resolution
-            _buildResolutionSection(theme, video),
+            // 6. Aspect Ratio & Resolution Presets
+            _buildAspectRatioAndResolutionSection(theme, video),
             const SizedBox(height: 16),
 
             // 7. Output Frame Rate
@@ -777,66 +819,481 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
   }
 
   // -------------------------------------------------------------------------
-  // 6. Output Resolution (Aspect-Ratio Preserved)
+  // 5. Aspect Ratio & Resolution Presets
   // -------------------------------------------------------------------------
-  Widget _buildResolutionSection(ThemeData theme, StreamInfo video) {
-    final sourceW = video.width ?? 1920;
-    final sourceH = video.height ?? 1080;
-    final activeH = _settings.targetHeight;
+  Widget _buildAspectRatioAndResolutionSection(ThemeData theme, StreamInfo video) {
+    final scheme = theme.colorScheme;
+    final int sourceW = (video.displayWidth != null && video.displayWidth! > 0)
+        ? video.displayWidth!
+        : (video.width ?? 1920);
+    final int sourceH = (video.displayHeight != null && video.displayHeight! > 0)
+        ? video.displayHeight!
+        : (video.height ?? 1080);
+    final sourceAspectStr = video.aspectRatioString;
+
+    // Calculate current geometry preview
+    final geom = ResolutionHelper.calculateGeometry(
+      sourceWidth: sourceW,
+      sourceHeight: sourceH,
+      aspectRatio: _settings.aspectRatio,
+      customAspectWidth: _settings.customAspectRatioWidth,
+      customAspectHeight: _settings.customAspectRatioHeight,
+      targetWidth: _settings.targetWidth,
+      targetHeight: _settings.targetHeight,
+      fitPolicy: _settings.fitPolicy,
+    );
+
+    // Current resolution dropdown key
+    String currentResKey;
+    if (_isCustomResolution) {
+      currentResKey = 'custom';
+    } else if (_settings.targetWidth == null && _settings.targetHeight == null) {
+      currentResKey = 'original';
+    } else {
+      final matching = ResolutionPreset.findByDimensions(
+          _settings.targetWidth, _settings.targetHeight);
+      if (matching != null) {
+        currentResKey = '${matching.standardWidth}x${matching.standardHeight}';
+      } else {
+        currentResKey = 'custom';
+      }
+    }
+
+    final hasModifiedGeometry = _settings.aspectRatio != AspectRatioOption.original ||
+        _settings.targetWidth != null ||
+        _settings.targetHeight != null ||
+        _settings.fitPolicy != VideoFitPolicy.preserveOriginal;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('5. Output Resolution',
-            style: theme.textTheme.titleSmall
-                ?.copyWith(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 6),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('5. Aspect Ratio & Resolution',
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold)),
+            if (hasModifiedGeometry)
+              TextButton(
+                style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                onPressed: () {
+                  setState(() {
+                    _isCustomResolution = false;
+                    _customResWController.clear();
+                    _customResHController.clear();
+                    _customAspectWController.clear();
+                    _customAspectHController.clear();
+                  });
+                  _update(_settings.copyWith(
+                    aspectRatio: AspectRatioOption.original,
+                    fitPolicy: VideoFitPolicy.preserveOriginal,
+                    clearResolution: true,
+                    clearCustomAspectRatio: true,
+                    clearPresetId: true,
+                  ));
+                },
+                child: const Text('Reset to original', style: TextStyle(fontSize: 12)),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+
+        // Aspect Ratio Selector
         InputDecorator(
           decoration: const InputDecoration(
+            labelText: 'Aspect Ratio',
             border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
             contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+            isDense: true,
           ),
           child: DropdownButtonHideUnderline(
-            child: DropdownButton<int?>(
-              value: activeH,
+            child: DropdownButton<AspectRatioOption>(
+              value: _settings.aspectRatio,
               isExpanded: true,
               items: [
-                DropdownMenuItem<int?>(
-                  value: null,
+                DropdownMenuItem(
+                  value: AspectRatioOption.original,
+                  child: Text('Original ($sourceAspectStr)'),
+                ),
+                DropdownMenuItem(
+                  value: AspectRatioOption.ar9_16,
+                  child: Text(AspectRatioOption.ar9_16.label),
+                ),
+                DropdownMenuItem(
+                  value: AspectRatioOption.ar16_9,
+                  child: Text(AspectRatioOption.ar16_9.label),
+                ),
+                DropdownMenuItem(
+                  value: AspectRatioOption.ar1_1,
+                  child: Text(AspectRatioOption.ar1_1.label),
+                ),
+                DropdownMenuItem(
+                  value: AspectRatioOption.ar4_5,
+                  child: Text(AspectRatioOption.ar4_5.label),
+                ),
+                DropdownMenuItem(
+                  value: AspectRatioOption.ar3_4,
+                  child: Text(AspectRatioOption.ar3_4.label),
+                ),
+                DropdownMenuItem(
+                  value: AspectRatioOption.ar4_3,
+                  child: Text(AspectRatioOption.ar4_3.label),
+                ),
+                const DropdownMenuItem(
+                  value: AspectRatioOption.custom,
+                  child: Text('Custom Aspect Ratio…'),
+                ),
+              ],
+              onChanged: (ar) {
+                if (ar == null) return;
+                // If switching to standard 9:16 or social aspect ratio, default to fitPadding
+                final newFitPolicy = (ar != AspectRatioOption.original &&
+                        _settings.fitPolicy == VideoFitPolicy.preserveOriginal)
+                    ? VideoFitPolicy.fitPadding
+                    : _settings.fitPolicy;
+                _update(_settings.copyWith(
+                  aspectRatio: ar,
+                  fitPolicy: newFitPolicy,
+                  clearPresetId: true,
+                ));
+              },
+            ),
+          ),
+        ),
+
+        // Custom Aspect Ratio inputs
+        if (_settings.aspectRatio == AspectRatioOption.custom) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextFormField(
+                  controller: _customAspectWController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Ratio Width',
+                    hintText: 'e.g. 21',
+                    isDense: true,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))),
+                  ),
+                  onChanged: (val) {
+                    final w = int.tryParse(val.trim());
+                    final h = int.tryParse(_customAspectHController.text.trim());
+                    if (w != null && w > 0 && h != null && h > 0) {
+                      _update(_settings.copyWith(
+                        customAspectRatioWidth: w,
+                        customAspectRatioHeight: h,
+                        clearPresetId: true,
+                      ));
+                    }
+                  },
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 10),
+                child: Text(':', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              ),
+              Expanded(
+                child: TextFormField(
+                  controller: _customAspectHController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Ratio Height',
+                    hintText: 'e.g. 9',
+                    isDense: true,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))),
+                  ),
+                  onChanged: (val) {
+                    final w = int.tryParse(_customAspectWController.text.trim());
+                    final h = int.tryParse(val.trim());
+                    if (w != null && w > 0 && h != null && h > 0) {
+                      _update(_settings.copyWith(
+                        customAspectRatioWidth: w,
+                        customAspectRatioHeight: h,
+                        clearPresetId: true,
+                      ));
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+        ],
+
+        const SizedBox(height: 12),
+
+        // Resolution Selector
+        InputDecorator(
+          decoration: const InputDecoration(
+            labelText: 'Container Resolution',
+            border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
+            contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+            isDense: true,
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: currentResKey,
+              isExpanded: true,
+              items: [
+                DropdownMenuItem<String>(
+                  value: 'original',
                   child: Text('Keep original ($sourceW×$sourceH)'),
                 ),
                 for (final res in ResolutionPreset.all)
-                  DropdownMenuItem<int?>(
-                    value: res.standardHeight,
-                    child: () {
-                      final dims = res.calculateDimensions(sourceW, sourceH);
-                      final isSame = dims.$1 >= sourceW && dims.$2 >= sourceH;
-                      return Text(
-                        isSame
-                            ? '${res.name} (Source $sourceW×$sourceH - no upscale)'
-                            : '${res.name} (${dims.$1}×${dims.$2})',
-                      );
-                    }(),
+                  DropdownMenuItem<String>(
+                    value: '${res.standardWidth}x${res.standardHeight}',
+                    child: Text('${res.name} — ${res.standardWidth} × ${res.standardHeight}'),
                   ),
+                const DropdownMenuItem<String>(
+                  value: 'custom',
+                  child: Text('Custom Resolution…'),
+                ),
               ],
-              onChanged: (selectedHeight) {
-                if (selectedHeight == null) {
+              onChanged: (key) {
+                if (key == null) return;
+                if (key == 'original') {
+                  setState(() => _isCustomResolution = false);
                   _update(_settings.copyWith(
                     clearResolution: true,
                     clearPresetId: true,
                   ));
+                } else if (key == 'custom') {
+                  setState(() => _isCustomResolution = true);
                 } else {
-                  final preset = ResolutionPreset.all.firstWhere(
-                    (p) => p.standardHeight == selectedHeight,
-                  );
-                  final dims = preset.calculateDimensions(sourceW, sourceH);
+                  setState(() => _isCustomResolution = false);
+                  final parts = key.split('x');
+                  final w = int.parse(parts[0]);
+                  final h = int.parse(parts[1]);
                   _update(_settings.copyWith(
-                    targetWidth: dims.$1,
-                    targetHeight: dims.$2,
+                    targetWidth: w,
+                    targetHeight: h,
                     clearPresetId: true,
                   ));
                 }
               },
+            ),
+          ),
+        ),
+
+        // Custom Resolution inputs
+        if (_isCustomResolution) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextFormField(
+                  controller: _customResWController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Width (px)',
+                    hintText: 'e.g. 1920',
+                    isDense: true,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))),
+                  ),
+                  onChanged: (val) {
+                    final w = int.tryParse(val.trim());
+                    final h = int.tryParse(_customResHController.text.trim());
+                    if (w != null && w > 0 && h != null && h > 0) {
+                      _update(_settings.copyWith(
+                        targetWidth: ResolutionHelper.makeEven(w),
+                        targetHeight: ResolutionHelper.makeEven(h),
+                        clearPresetId: true,
+                      ));
+                    }
+                  },
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 10),
+                child: Text('×', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              ),
+              Expanded(
+                child: TextFormField(
+                  controller: _customResHController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Height (px)',
+                    hintText: 'e.g. 1080',
+                    isDense: true,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))),
+                  ),
+                  onChanged: (val) {
+                    final w = int.tryParse(_customResWController.text.trim());
+                    final h = int.tryParse(val.trim());
+                    if (w != null && w > 0 && h != null && h > 0) {
+                      _update(_settings.copyWith(
+                        targetWidth: ResolutionHelper.makeEven(w),
+                        targetHeight: ResolutionHelper.makeEven(h),
+                        clearPresetId: true,
+                      ));
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Dimensions are automatically aligned to even numbers (YUV420 standard).',
+            style: theme.textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
+
+        const SizedBox(height: 12),
+
+        // Fit Policy Selector (Framing)
+        InputDecorator(
+          decoration: const InputDecoration(
+            labelText: 'Video Framing & Fit Policy',
+            border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
+            contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+            isDense: true,
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<VideoFitPolicy>(
+              value: _settings.fitPolicy,
+              isExpanded: true,
+              items: const [
+                DropdownMenuItem(
+                  value: VideoFitPolicy.fitPadding,
+                  child: Text('Fit with Padding (Letterbox/Pillarbox - Safe Default)'),
+                ),
+                DropdownMenuItem(
+                  value: VideoFitPolicy.cropFill,
+                  child: Text('Crop to Fill (Fills container, center-crops edges)'),
+                ),
+                DropdownMenuItem(
+                  value: VideoFitPolicy.preserveOriginal,
+                  child: Text('Preserve Original (Proportional scale, no bars)'),
+                ),
+                DropdownMenuItem(
+                  value: VideoFitPolicy.stretch,
+                  child: Text('Stretch to Fill (Warning: geometric distortion)'),
+                ),
+              ],
+              onChanged: (policy) {
+                if (policy != null) {
+                  _update(_settings.copyWith(
+                    fitPolicy: policy,
+                    clearPresetId: true,
+                  ));
+                }
+              },
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 10),
+
+        // Interactive Compatibility & Preview Card
+        Card(
+          elevation: 0,
+          color: scheme.surfaceContainerLow,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Geometry Preview',
+                      style: theme.textTheme.labelMedium
+                          ?.copyWith(fontWeight: FontWeight.bold, color: scheme.primary),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: geom.isStretched
+                            ? scheme.errorContainer
+                            : geom.isPadded || geom.isCropped
+                                ? scheme.tertiaryContainer
+                                : scheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        geom.isStretched
+                            ? 'Stretched'
+                            : geom.isPadded
+                                ? 'Padded'
+                                : geom.isCropped
+                                    ? 'Cropped'
+                                    : 'Proportional',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: geom.isStretched
+                              ? scheme.onErrorContainer
+                              : geom.isPadded || geom.isCropped
+                                  ? scheme.onTertiaryContainer
+                                  : scheme.onPrimaryContainer,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Source Media:',
+                        style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                    Text('$sourceW × $sourceH ($sourceAspectStr)',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: scheme.onSurface)),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Target Output:',
+                        style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                    Text('${geom.outputWidth} × ${geom.outputHeight} (${geom.outputAspectRatioStr})',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: scheme.primary)),
+                  ],
+                ),
+                if (geom.explanation != null) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.info_outline, size: 14, color: scheme.onSurfaceVariant),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          geom.explanation!,
+                          style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                if (geom.warning != null) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: scheme.errorContainer.withValues(alpha: 0.7),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.warning_amber_rounded, size: 16, color: scheme.error),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            geom.warning!,
+                            style: TextStyle(fontSize: 11, color: scheme.onErrorContainer),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
         ),
@@ -1238,8 +1695,24 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
   Widget _buildEstimateSection(
       ThemeData theme, MediaInfo media, StreamInfo video) {
     final scheme = theme.colorScheme;
-    final w = _settings.targetWidth ?? video.width ?? 1280;
-    final h = _settings.targetHeight ?? video.height ?? 720;
+    final int srcW = (video.displayWidth != null && video.displayWidth! > 0)
+        ? video.displayWidth!
+        : (video.width ?? 1280);
+    final int srcH = (video.displayHeight != null && video.displayHeight! > 0)
+        ? video.displayHeight!
+        : (video.height ?? 720);
+    final geom = ResolutionHelper.calculateGeometry(
+      sourceWidth: srcW,
+      sourceHeight: srcH,
+      aspectRatio: _settings.aspectRatio,
+      customAspectWidth: _settings.customAspectRatioWidth,
+      customAspectHeight: _settings.customAspectRatioHeight,
+      targetWidth: _settings.targetWidth,
+      targetHeight: _settings.targetHeight,
+      fitPolicy: _settings.fitPolicy,
+    );
+    final w = geom.outputWidth;
+    final h = geom.outputHeight;
     final fps = _settings.frameRate ?? video.frameRate ?? 30.0;
 
     String estimatedSizeStr;
@@ -1328,7 +1801,7 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
             children: [
               Text('Effective resolution:',
                   style: TextStyle(fontSize: 12, color: scheme.onSecondaryContainer)),
-              Text('$w×$h @ ${fps.toStringAsFixed(1)} fps',
+              Text('$w×$h (${geom.outputAspectRatioStr}) @ ${fps.toStringAsFixed(1)} fps',
                   style: TextStyle(fontSize: 12, color: scheme.onSecondaryContainer)),
             ],
           ),
@@ -1507,6 +1980,10 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
         quality: _settings.quality,
         hdrMode: _settings.hdrMode,
         hdrIntensity: _settings.hdrIntensity,
+        aspectRatio: _settings.aspectRatio,
+        customAspectRatioWidth: _settings.customAspectRatioWidth,
+        customAspectRatioHeight: _settings.customAspectRatioHeight,
+        fitPolicy: _settings.fitPolicy,
         isBuiltIn: false,
       );
 

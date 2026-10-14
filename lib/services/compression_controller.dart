@@ -343,11 +343,27 @@ class CompressionController extends ChangeNotifier {
         progress = const JobProgress(stageLabel: 'Checking output');
         notifyListeners();
         try {
+          final expectedGeom = (inVideo != null)
+              ? ResolutionHelper.calculateGeometry(
+                  sourceWidth: (inVideo.displayWidth != null && inVideo.displayWidth! > 0)
+                      ? inVideo.displayWidth!
+                      : (inVideo.width ?? 1280),
+                  sourceHeight: (inVideo.displayHeight != null && inVideo.displayHeight! > 0)
+                      ? inVideo.displayHeight!
+                      : (inVideo.height ?? 720),
+                  aspectRatio: finalSettings.aspectRatio,
+                  customAspectWidth: finalSettings.customAspectRatioWidth,
+                  customAspectHeight: finalSettings.customAspectRatioHeight,
+                  targetWidth: finalSettings.targetWidth,
+                  targetHeight: finalSettings.targetHeight,
+                  fitPolicy: finalSettings.fitPolicy,
+                )
+              : null;
           integrityResult = await _verification.verifyLossyIntegrity(
             source: media,
             outputPath: outputPath,
-            expectedWidth: finalSettings.targetWidth,
-            expectedHeight: finalSettings.targetHeight,
+            expectedWidth: expectedGeom?.outputWidth ?? finalSettings.targetWidth,
+            expectedHeight: expectedGeom?.outputHeight ?? finalSettings.targetHeight,
             expectAudio: media.audioStream != null &&
                 finalSettings.audio != AudioAction.none,
           );
@@ -379,6 +395,10 @@ class CompressionController extends ChangeNotifier {
       String? outColorSpace;
       int? outBitDepth;
       String? hdrStatus;
+      int? outWidth;
+      int? outHeight;
+      String? outAspectRatio;
+      double? outFps;
 
       try {
         final outProbe = await ffmpeg.probe(outputPath, fallbackSizeBytes: outputBytes);
@@ -392,6 +412,19 @@ class CompressionController extends ChangeNotifier {
         outColorTransfer = probedVideo?.colorTransfer;
         outColorSpace = probedVideo?.colorSpace;
         outBitDepth = probedVideo?.bitDepth;
+
+        if (probedVideo != null) {
+          outWidth = (probedVideo.displayWidth != null && probedVideo.displayWidth! > 0)
+              ? probedVideo.displayWidth
+              : probedVideo.width;
+          outHeight = (probedVideo.displayHeight != null && probedVideo.displayHeight! > 0)
+              ? probedVideo.displayHeight
+              : probedVideo.height;
+          outFps = probedVideo.frameRate;
+          if (outWidth != null && outHeight != null && outWidth > 0 && outHeight > 0) {
+            outAspectRatio = AspectRatioHelper.formatAspectRatio(outWidth, outHeight);
+          }
+        }
 
         if (finalSettings.hdrMode == HdrMode.hdrEffect) {
           hdrStatus = 'HDR Effect (${(finalSettings.hdrIntensity * 100).round()}%)';
@@ -412,6 +445,9 @@ class CompressionController extends ChangeNotifier {
         }
       } catch (_) {}
       diag.line('verified output codec: $outputCodecLabel');
+      if (outWidth != null && outHeight != null) {
+        diag.line('verified output geometry: $outWidth×$outHeight (ratio=$outAspectRatio, fps=$outFps)');
+      }
       if (hdrStatus != null) {
         diag.line('verified output HDR/color: $hdrStatus (pixFmt=$outPixFmt, prim=$outColorPrimaries, trc=$outColorTransfer, bitDepth=$outBitDepth)');
       }
@@ -435,6 +471,12 @@ class CompressionController extends ChangeNotifier {
         outputBitDepth: outBitDepth,
         hdrMode: finalSettings.hdrMode,
         hdrStatus: hdrStatus,
+        outputWidth: outWidth,
+        outputHeight: outHeight,
+        outputAspectRatio: outAspectRatio,
+        outputFps: outFps,
+        aspectRatio: finalSettings.aspectRatio,
+        fitPolicy: finalSettings.fitPolicy,
       );
       await jobRepository.add(lastRecord!);
       progress = const JobProgress(stageLabel: 'Done', percent: 1.0);
@@ -584,6 +626,12 @@ class CompressionController extends ChangeNotifier {
     int? outputBitDepth,
     HdrMode? hdrMode,
     String? hdrStatus,
+    int? outputWidth,
+    int? outputHeight,
+    String? outputAspectRatio,
+    double? outputFps,
+    AspectRatioOption? aspectRatio,
+    VideoFitPolicy? fitPolicy,
   }) {
     final record = JobRecord(
       id: jobId,
@@ -606,6 +654,12 @@ class CompressionController extends ChangeNotifier {
       outputBitDepth: outputBitDepth,
       hdrMode: hdrMode ?? settings.hdrMode,
       hdrStatus: hdrStatus,
+      outputWidth: outputWidth,
+      outputHeight: outputHeight,
+      outputAspectRatio: outputAspectRatio,
+      outputFps: outputFps,
+      aspectRatio: aspectRatio ?? settings.aspectRatio,
+      fitPolicy: fitPolicy ?? settings.fitPolicy,
     );
     lastRecord = record;
     return record;

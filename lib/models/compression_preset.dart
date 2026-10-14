@@ -31,6 +31,10 @@ class CompressionPreset {
     this.isBuiltIn = false,
     this.hdrMode,
     this.hdrIntensity,
+    this.aspectRatio,
+    this.customAspectRatioWidth,
+    this.customAspectRatioHeight,
+    this.fitPolicy,
   });
 
   final String id;
@@ -50,6 +54,10 @@ class CompressionPreset {
   final bool isBuiltIn;
   final HdrMode? hdrMode;
   final double? hdrIntensity;
+  final AspectRatioOption? aspectRatio;
+  final int? customAspectRatioWidth;
+  final int? customAspectRatioHeight;
+  final VideoFitPolicy? fitPolicy;
 
   double? get targetSizeMB =>
       targetSizeBytes == null ? null : targetSizeBytes! / (1024 * 1024);
@@ -72,12 +80,19 @@ class CompressionPreset {
     bool? isBuiltIn,
     HdrMode? hdrMode,
     double? hdrIntensity,
+    AspectRatioOption? aspectRatio,
+    int? customAspectRatioWidth,
+    int? customAspectRatioHeight,
+    VideoFitPolicy? fitPolicy,
     bool clearTargetSize = false,
     bool clearResolution = false,
     bool clearFrameRate = false,
     bool clearCrf = false,
     bool clearHdrMode = false,
     bool clearHdrIntensity = false,
+    bool clearAspectRatio = false,
+    bool clearCustomAspectRatio = false,
+    bool clearFitPolicy = false,
   }) {
     return CompressionPreset(
       id: id ?? this.id,
@@ -101,6 +116,14 @@ class CompressionPreset {
       hdrMode: clearHdrMode ? null : (hdrMode ?? this.hdrMode),
       hdrIntensity:
           clearHdrIntensity ? null : (hdrIntensity ?? this.hdrIntensity),
+      aspectRatio: clearAspectRatio ? null : (aspectRatio ?? this.aspectRatio),
+      customAspectRatioWidth: clearCustomAspectRatio
+          ? null
+          : (customAspectRatioWidth ?? this.customAspectRatioWidth),
+      customAspectRatioHeight: clearCustomAspectRatio
+          ? null
+          : (customAspectRatioHeight ?? this.customAspectRatioHeight),
+      fitPolicy: clearFitPolicy ? null : (fitPolicy ?? this.fitPolicy),
     );
   }
 
@@ -122,6 +145,10 @@ class CompressionPreset {
         'isBuiltIn': isBuiltIn,
         'hdrMode': hdrMode?.name,
         'hdrIntensity': hdrIntensity,
+        'aspectRatio': aspectRatio?.name,
+        'customAspectRatioWidth': customAspectRatioWidth,
+        'customAspectRatioHeight': customAspectRatioHeight,
+        'fitPolicy': fitPolicy?.name,
       };
 
   factory CompressionPreset.fromJson(Map<String, dynamic> json) {
@@ -155,10 +182,90 @@ class CompressionPreset {
           ? HdrMode.values.asNameMap()[json['hdrMode']]
           : null,
       hdrIntensity: (json['hdrIntensity'] as num?)?.toDouble(),
+      aspectRatio: json['aspectRatio'] != null
+          ? AspectRatioOption.values.asNameMap()[json['aspectRatio']]
+          : null,
+      customAspectRatioWidth: json['customAspectRatioWidth'] as int?,
+      customAspectRatioHeight: json['customAspectRatioHeight'] as int?,
+      fitPolicy: json['fitPolicy'] != null
+          ? VideoFitPolicy.values.asNameMap()[json['fitPolicy']]
+          : null,
     );
   }
 
   static const List<CompressionPreset> builtInPresets = [
+    // Social Media Video Presets (Suggested export configurations)
+    CompressionPreset(
+      id: 'builtin_tiktok',
+      name: 'TikTok',
+      description: '1080 × 1920 vertical video (9:16) optimized for TikTok',
+      aspectRatio: AspectRatioOption.ar9_16,
+      targetWidth: 1080,
+      targetHeight: 1920,
+      fitPolicy: VideoFitPolicy.fitPadding,
+      profile: CompressionProfile.medium,
+      videoCodec: VideoCodecOption.h264,
+      container: ContainerOption.mp4,
+      audio: AudioAction.aac128,
+      isBuiltIn: true,
+    ),
+    CompressionPreset(
+      id: 'builtin_instagram_reels',
+      name: 'Instagram Reels',
+      description: '1080 × 1920 vertical format (9:16) for Reels & Stories',
+      aspectRatio: AspectRatioOption.ar9_16,
+      targetWidth: 1080,
+      targetHeight: 1920,
+      fitPolicy: VideoFitPolicy.fitPadding,
+      profile: CompressionProfile.medium,
+      videoCodec: VideoCodecOption.h264,
+      container: ContainerOption.mp4,
+      audio: AudioAction.aac128,
+      isBuiltIn: true,
+    ),
+    CompressionPreset(
+      id: 'builtin_youtube_shorts',
+      name: 'YouTube Shorts',
+      description: '1080 × 1920 vertical video (9:16) for YouTube Shorts',
+      aspectRatio: AspectRatioOption.ar9_16,
+      targetWidth: 1080,
+      targetHeight: 1920,
+      fitPolicy: VideoFitPolicy.fitPadding,
+      profile: CompressionProfile.medium,
+      videoCodec: VideoCodecOption.h264,
+      container: ContainerOption.mp4,
+      audio: AudioAction.aac128,
+      isBuiltIn: true,
+    ),
+    CompressionPreset(
+      id: 'builtin_facebook_reels',
+      name: 'Facebook Reels',
+      description: '1080 × 1920 vertical format (9:16) for Facebook Reels',
+      aspectRatio: AspectRatioOption.ar9_16,
+      targetWidth: 1080,
+      targetHeight: 1920,
+      fitPolicy: VideoFitPolicy.fitPadding,
+      profile: CompressionProfile.medium,
+      videoCodec: VideoCodecOption.h264,
+      container: ContainerOption.mp4,
+      audio: AudioAction.aac128,
+      isBuiltIn: true,
+    ),
+    CompressionPreset(
+      id: 'builtin_general_vertical',
+      name: 'General Vertical Video',
+      description: '1080 × 1920 standard 9:16 vertical video for mobile',
+      aspectRatio: AspectRatioOption.ar9_16,
+      targetWidth: 1080,
+      targetHeight: 1920,
+      fitPolicy: VideoFitPolicy.fitPadding,
+      profile: CompressionProfile.medium,
+      videoCodec: VideoCodecOption.h264,
+      container: ContainerOption.mp4,
+      audio: AudioAction.copySource,
+      isBuiltIn: true,
+    ),
+    // Platform File-size Presets
     CompressionPreset(
       id: 'builtin_github_10mb',
       name: 'GitHub',

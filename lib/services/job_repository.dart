@@ -56,6 +56,12 @@ class JobRepository {
         'outputBitDepth': r.outputBitDepth,
         'hdrMode': r.hdrMode?.name,
         'hdrStatus': r.hdrStatus,
+        'outputWidth': r.outputWidth,
+        'outputHeight': r.outputHeight,
+        'outputAspectRatio': r.outputAspectRatio,
+        'outputFps': r.outputFps,
+        'aspectRatio': r.aspectRatio?.name,
+        'fitPolicy': r.fitPolicy?.name,
         'verification': r.verification == null
             ? null
             : {
@@ -79,6 +85,8 @@ class JobRepository {
     final v = m['verification'] as Map<String, dynamic>?;
     final i = m['integrity'] as Map<String, dynamic>?;
     final hdrModeName = m['hdrMode'] as String?;
+    final aspectRatioName = m['aspectRatio'] as String?;
+    final fitPolicyName = m['fitPolicy'] as String?;
     return JobRecord(
       id: m['id'] as String,
       createdAt: DateTime.parse(m['createdAt'] as String),
@@ -109,6 +117,22 @@ class JobRepository {
             )
           : null,
       hdrStatus: m['hdrStatus'] as String?,
+      outputWidth: (m['outputWidth'] as num?)?.toInt(),
+      outputHeight: (m['outputHeight'] as num?)?.toInt(),
+      outputAspectRatio: m['outputAspectRatio'] as String?,
+      outputFps: (m['outputFps'] as num?)?.toDouble(),
+      aspectRatio: aspectRatioName != null
+          ? AspectRatioOption.values.firstWhere(
+              (e) => e.name == aspectRatioName,
+              orElse: () => AspectRatioOption.original,
+            )
+          : null,
+      fitPolicy: fitPolicyName != null
+          ? VideoFitPolicy.values.firstWhere(
+              (e) => e.name == fitPolicyName,
+              orElse: () => VideoFitPolicy.preserveOriginal,
+            )
+          : null,
       verification: v == null
           ? null
           : VerificationResult(

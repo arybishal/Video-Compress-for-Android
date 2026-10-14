@@ -51,6 +51,14 @@ class SettingsValidator {
             'Exact Lossless mode cannot apply HDR conversions or visual effects. '
             'Switch to High Efficiency or Custom mode.'));
       }
+      if (settings.aspectRatio != AspectRatioOption.original) {
+        errors.add(const ValidationIssue(
+            'Exact Lossless mode cannot modify aspect ratio. Set Aspect Ratio to Original.'));
+      }
+      if (settings.fitPolicy != VideoFitPolicy.preserveOriginal) {
+        errors.add(const ValidationIssue(
+            'Exact Lossless mode cannot crop, pad, or stretch video. Set Fit Policy to Preserve Original.'));
+      }
       if (settings.targetWidth != null ||
           settings.targetHeight != null ||
           settings.targetBitrateKbps != null ||
@@ -180,6 +188,14 @@ class SettingsValidator {
           errors.add(ValidationIssue(
               'Source codec ${video.codecName} cannot be copied into '
               '${settings.container.name.toUpperCase()}. Pick another container or an encoding codec.'));
+        }
+        if (settings.aspectRatio != AspectRatioOption.original) {
+          errors.add(const ValidationIssue(
+              'Stream copy (no re-encode) cannot modify aspect ratio.'));
+        }
+        if (settings.fitPolicy != VideoFitPolicy.preserveOriginal) {
+          errors.add(const ValidationIssue(
+              'Stream copy (no re-encode) cannot crop, pad, or stretch video.'));
         }
         if (settings.targetWidth != null ||
             settings.targetHeight != null ||
@@ -318,6 +334,46 @@ class SettingsValidator {
               'software encoder at the same bitrate.',
               isBlocking: false));
         }
+      }
+    }
+
+    if (settings.aspectRatio == AspectRatioOption.custom) {
+      if (settings.customAspectRatioWidth == null ||
+          settings.customAspectRatioHeight == null ||
+          settings.customAspectRatioWidth! <= 0 ||
+          settings.customAspectRatioHeight! <= 0) {
+        errors.add(const ValidationIssue(
+            'Custom aspect ratio requires valid positive width and height numbers.'));
+      }
+    }
+
+    if (settings.targetWidth != null || settings.targetHeight != null) {
+      if (settings.targetWidth != null &&
+          (settings.targetWidth! < 16 ||
+              settings.targetWidth! > 8192 ||
+              settings.targetWidth! % 2 != 0)) {
+        errors.add(const ValidationIssue(
+            'Target width must be an even integer between 16 and 8192.'));
+      }
+      if (settings.targetHeight != null &&
+          (settings.targetHeight! < 16 ||
+              settings.targetHeight! > 8192 ||
+              settings.targetHeight! % 2 != 0)) {
+        errors.add(const ValidationIssue(
+            'Target height must be an even integer between 16 and 8192.'));
+      }
+    }
+
+    if (settings.mode != CompressionMode.exactLossless &&
+        settings.videoCodec != VideoCodecOption.copySource) {
+      if (settings.fitPolicy == VideoFitPolicy.stretch) {
+        warnings.add(const ValidationIssue(
+            'Stretch to Fill alters video geometry and may noticeably distort people and objects.',
+            isBlocking: false));
+      } else if (settings.fitPolicy == VideoFitPolicy.cropFill) {
+        warnings.add(const ValidationIssue(
+            'Crop to Fill removes edges of the original video to fill the selected ratio.',
+            isBlocking: false));
       }
     }
 

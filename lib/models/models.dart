@@ -2,8 +2,10 @@
 /// media logic is unit-testable on the host.
 library;
 
+import 'aspect_ratio_options.dart';
 import 'compression_preset.dart';
 import 'hdr_options.dart';
+export 'aspect_ratio_options.dart';
 export 'compression_preset.dart';
 export 'hdr_options.dart';
 export 'resolution_helper.dart';
@@ -128,6 +130,20 @@ class StreamInfo {
     }
     return parts.isEmpty ? 'SDR (8-bit)' : parts.join(', ');
   }
+
+  /// Display dimensions accounting for rotation metadata (90°/270° swaps width and height).
+  int? get displayWidth =>
+      (rotationDegrees == 90 || rotationDegrees == 270) ? height : width;
+
+  int? get displayHeight =>
+      (rotationDegrees == 90 || rotationDegrees == 270) ? width : height;
+
+  bool get isPortrait => (displayHeight ?? 0) > (displayWidth ?? 0);
+
+  String get aspectRatioString =>
+      (displayWidth != null && displayHeight != null)
+          ? AspectRatioHelper.formatAspectRatio(displayWidth!, displayHeight!)
+          : 'Unknown';
 }
 
 /// Result of probing a source file with ffprobe.
@@ -194,6 +210,10 @@ class CompressionSettings {
     this.speedPreset = SpeedPreset.medium,
     this.hdrMode = HdrMode.off,
     this.hdrIntensity = 0.5,
+    this.aspectRatio = AspectRatioOption.original,
+    this.customAspectRatioWidth,
+    this.customAspectRatioHeight,
+    this.fitPolicy = VideoFitPolicy.preserveOriginal,
   });
 
   final CompressionMode mode;
@@ -228,6 +248,18 @@ class CompressionSettings {
   /// Intensity factor for [HdrMode.hdrEffect] (0.1 to 1.0, default 0.5).
   final double hdrIntensity;
 
+  /// Aspect ratio preference (Original, 9:16, 16:9, 1:1, 4:5, 3:4, 4:3, Custom).
+  final AspectRatioOption aspectRatio;
+
+  /// Custom aspect ratio width component.
+  final int? customAspectRatioWidth;
+
+  /// Custom aspect ratio height component.
+  final int? customAspectRatioHeight;
+
+  /// Explicit output-fit policy (preserveOriginal, fitPadding, cropFill, stretch).
+  final VideoFitPolicy fitPolicy;
+
   CompressionSettings copyWith({
     CompressionMode? mode,
     VideoCodecOption? videoCodec,
@@ -248,6 +280,10 @@ class CompressionSettings {
     SpeedPreset? speedPreset,
     HdrMode? hdrMode,
     double? hdrIntensity,
+    AspectRatioOption? aspectRatio,
+    int? customAspectRatioWidth,
+    int? customAspectRatioHeight,
+    VideoFitPolicy? fitPolicy,
     bool clearResolution = false,
     bool clearBitrate = false,
     bool clearTargetSize = false,
@@ -255,6 +291,7 @@ class CompressionSettings {
     bool clearPresetId = false,
     bool clearFrameRate = false,
     bool clearCrf = false,
+    bool clearCustomAspectRatio = false,
   }) {
     return CompressionSettings(
       mode: mode ?? this.mode,
@@ -278,6 +315,14 @@ class CompressionSettings {
       speedPreset: speedPreset ?? this.speedPreset,
       hdrMode: hdrMode ?? this.hdrMode,
       hdrIntensity: hdrIntensity ?? this.hdrIntensity,
+      aspectRatio: aspectRatio ?? this.aspectRatio,
+      customAspectRatioWidth: clearCustomAspectRatio
+          ? null
+          : (customAspectRatioWidth ?? this.customAspectRatioWidth),
+      customAspectRatioHeight: clearCustomAspectRatio
+          ? null
+          : (customAspectRatioHeight ?? this.customAspectRatioHeight),
+      fitPolicy: fitPolicy ?? this.fitPolicy,
     );
   }
 }
@@ -361,6 +406,12 @@ class JobRecord {
     this.outputBitDepth,
     this.hdrMode,
     this.hdrStatus,
+    this.outputWidth,
+    this.outputHeight,
+    this.outputAspectRatio,
+    this.outputFps,
+    this.aspectRatio,
+    this.fitPolicy,
   });
 
   final String id;
@@ -387,6 +438,14 @@ class JobRecord {
   final int? outputBitDepth;
   final HdrMode? hdrMode;
   final String? hdrStatus;
+
+  /// Verified output dimensions and aspect ratio.
+  final int? outputWidth;
+  final int? outputHeight;
+  final String? outputAspectRatio;
+  final double? outputFps;
+  final AspectRatioOption? aspectRatio;
+  final VideoFitPolicy? fitPolicy;
 
   int get bytesDelta => originalBytes - outputBytes;
 

@@ -204,8 +204,26 @@ class JobPlanner {
     String outputPath,
   ) {
     final video = media.videoStream!;
-    final width = settings.targetWidth ?? video.width ?? 1280;
-    final height = settings.targetHeight ?? video.height ?? 720;
+    final int srcW = (video.displayWidth != null && video.displayWidth! > 0)
+        ? video.displayWidth!
+        : (video.width ?? 1280);
+    final int srcH = (video.displayHeight != null && video.displayHeight! > 0)
+        ? video.displayHeight!
+        : (video.height ?? 720);
+
+    final geom = ResolutionHelper.calculateGeometry(
+      sourceWidth: srcW,
+      sourceHeight: srcH,
+      aspectRatio: settings.aspectRatio,
+      customAspectWidth: settings.customAspectRatioWidth,
+      customAspectHeight: settings.customAspectRatioHeight,
+      targetWidth: settings.targetWidth,
+      targetHeight: settings.targetHeight,
+      fitPolicy: settings.fitPolicy,
+    );
+
+    final width = geom.outputWidth;
+    final height = geom.outputHeight;
     final fps = settings.frameRate ?? video.frameRate ?? 30.0;
     final codec = settings.videoCodec;
     final hasTargetSize = settings.targetSizeBytes != null;
@@ -326,13 +344,9 @@ class JobPlanner {
       args.addAll(colorArgs);
     }
 
-    // Explicit changes only — resolution/fps preserved unless the user asked.
+    // Explicit changes only — geometry filters must precede framerate and color filters.
     final filters = <String>[];
-    if (settings.targetWidth != null || settings.targetHeight != null) {
-      final evenW = width - (width % 2);
-      final evenH = height - (height % 2);
-      filters.add('scale=$evenW:$evenH');
-    }
+    filters.addAll(geom.filters);
     if (settings.frameRate != null) {
       filters.add('fps=${settings.frameRate}');
     }
@@ -369,14 +383,19 @@ class JobPlanner {
       HdrMode.preserveHdr => video.isHdr ? ' [HDR preserved]' : '',
       HdrMode.off => '',
     };
+    final geomTag = (settings.aspectRatio != AspectRatioOption.original ||
+            settings.targetWidth != null ||
+            settings.fitPolicy != VideoFitPolicy.preserveOriginal)
+        ? ' [${geom.outputWidth}×${geom.outputHeight}, ${geom.outputAspectRatioStr}]'
+        : '';
 
     final description = hasTargetSize
         ? 'Target size encode — $codecLabel at ~${kbps ?? 0} kbps for '
-            '${(settings.targetSizeBytes! / (1024 * 1024)).toStringAsFixed(1)} MB target$hdrTag.'
+            '${(settings.targetSizeBytes! / (1024 * 1024)).toStringAsFixed(1)} MB target$geomTag$hdrTag.'
         : useCrf
-            ? 'Lossy re-encode — $codecLabel at $rateLabel, ${settings.speedPreset.label} speed$hdrTag. '
+            ? 'Lossy re-encode — $codecLabel at $rateLabel, ${settings.speedPreset.label} speed$geomTag$hdrTag. '
                 'Lower CRF = better quality and a larger file. Not lossless.'
-            : 'Lossy re-encode — $codecLabel, ~${kbps ?? 0} kbps, ${settings.quality.label}$hdrTag. '
+            : 'Lossy re-encode — $codecLabel, ~${kbps ?? 0} kbps, ${settings.quality.label}$geomTag$hdrTag. '
                 'Quality is high but this is not mathematically lossless.';
 
     return CompressionPlan(
@@ -409,8 +428,14 @@ class JobPlanner {
       );
     }
     final video = media.videoStream;
-    final w = targetWidth ?? settings.targetWidth ?? video?.width ?? 1280;
-    final h = targetHeight ?? settings.targetHeight ?? video?.height ?? 720;
+    final int srcW = (video != null && video.displayWidth != null && video.displayWidth! > 0)
+        ? video.displayWidth!
+        : (video?.width ?? 1280);
+    final int srcH = (video != null && video.displayHeight != null && video.displayHeight! > 0)
+        ? video.displayHeight!
+        : (video?.height ?? 720);
+    final int w = targetWidth ?? settings.targetWidth ?? srcW;
+    final int h = targetHeight ?? settings.targetHeight ?? srcH;
     final f = fps ?? settings.frameRate ?? video?.frameRate ?? 30.0;
     return _estimatedBitrateKbps(w, h, f, settings.quality,
         sourceVideoBitrate: video?.bitRate, hdrMode: settings.hdrMode);
