@@ -28,9 +28,20 @@ Every compression operation happens completely locally on your device using a hi
 ## ✨ Features
 
 - 🔒 **100% Private & Offline**: Zero internet permissions (`android.permission.INTERNET` is not even declared). Your files never leave your device.
+- 📐 **Aspect Ratio & Resolution Control**:
+  - **Aspect Ratios**: Original, 9:16 Portrait, 16:9 Landscape, 1:1 Square, 4:5 Portrait Social, 3:4 Portrait, 4:3 Landscape, and Custom Ratios.
+  - **Resolution Presets**: Original, 4K (3840×2160), 3.5K (3440×1440), 2K (2560×1440), Full HD (1920×1080), HD (1280×720), SD (854×480), 1080×1920 Portrait, 720×1280 Portrait, and Custom Dimensions.
+  - **Framing & Fit Modes**: *Fit with Padding* (letterbox/pillarbox safe mode), *Crop to Fill* (center crop), *Stretch to Fill*, and *Preserve Original*.
+  - **Interactive Geometry Card**: Real-time side-by-side comparison of source media dimensions/aspect ratio vs. target output dimensions and framing tags.
+- 📱 **One-Tap Social Media Presets**: Instant vertical framing presets for TikTok, Instagram Reels, YouTube Shorts, Facebook Reels, and General Vertical Video.
+- 🌈 **Global HDR & Color Processing**:
+  - **Off**: Accurate color preservation.
+  - **HDR Effect**: Cinematic perceptual dynamic range enhancement with adjustable intensity slider (contrast, brightness, vibrancy without highlight clipping).
+  - **SDR to HDR10**: True HDR10 encoding with BT.2020 color space, SMPTE 2084 (PQ) transfer characteristics, and HDR metadata.
 - 🎯 **Exact Lossless Remuxing**: Stream-copy videos without re-encoding (`-c copy`) in seconds.
-- 🔬 **Decoded-Frame Fingerprinting (FrameMD5)**: Exact Lossless modes actually verify decoded frame equality against the source using MD5 hash sequences rather than guessing from return codes.
+- 🔬 **Decoded-Frame Fingerprinting (FrameMD5)**: Exact Lossless modes verify decoded frame equality against the source using MD5 hash sequences rather than guessing from return codes.
 - ⚡ **High Efficiency (CRF Mode)**: High visual fidelity with real Constant Rate Factor rate control for H.264, HEVC / H.265, and AV1.
+- 💾 **Custom Preset Manager**: Save custom parameter combinations as reusable named presets, switch profiles effortlessly, and manage custom workflows.
 - 🛠️ **Custom Mode**: Fine-grained control over resolution, frame rate, audio codecs (AAC / Opus / Passthrough), bitrate, and container (MP4 / MKV).
 - 🛡️ **Zero Destructive Actions**: Original videos are strictly read-only and never deleted or overwritten.
 - 📊 **Honest Metrics**: Clear progress reporting with true byte-for-byte delta calculations (honestly shows positive or negative savings).
@@ -135,7 +146,7 @@ The resulting package will be generated at:
 
 ## 🏷️ Tags & Topics
 
-`android` · `video-compression` · `ffmpeg` · `flutter` · `h264` · `hevc` · `h265` · `av1` · `lossless` · `privacy` · `offline-first` · `mediacodec` · `dart`
+`android` · `video-compression` · `ffmpeg` · `flutter` · `aspect-ratio` · `resolution-presets` · `hdr` · `h264` · `hevc` · `h265` · `av1` · `lossless` · `privacy` · `offline-first` · `mediacodec` · `dart`
 
 ---
 

@@ -2,7 +2,7 @@ name: pure_compress
 description: "PureCompress — 100% on-device Android video compressor. No cloud, no accounts, no ads."
 publish_to: 'none'
 
-version: 1.1.0+2
+version: 1.2.0+3
 
 environment:
   sdk: ^3.13.5
