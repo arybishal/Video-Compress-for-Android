@@ -48,9 +48,10 @@ class SettingsValidator {
       if (settings.targetWidth != null ||
           settings.targetHeight != null ||
           settings.targetBitrateKbps != null ||
+          settings.targetSizeBytes != null ||
           settings.frameRate != null) {
         errors.add(const ValidationIssue(
-            'Exact Lossless cannot change resolution, bitrate, or frame rate.'));
+            'Exact Lossless cannot change resolution, bitrate, target size, or frame rate.'));
       }
       final audio = media.audioStream;
 
@@ -139,9 +140,10 @@ class SettingsValidator {
         if (settings.targetWidth != null ||
             settings.targetHeight != null ||
             settings.targetBitrateKbps != null ||
+            settings.targetSizeBytes != null ||
             settings.frameRate != null) {
           errors.add(const ValidationIssue(
-              'Stream copy (no re-encode) cannot change resolution, bitrate, or frame rate.'));
+              'Stream copy (no re-encode) cannot change resolution, bitrate, target size, or frame rate.'));
         }
       } else {
         // Encoding selected — check requested codec availability. CRF mode
@@ -230,6 +232,15 @@ class SettingsValidator {
               '(${(video.bitRate! / 1000).round()} kbps) — the output may be as large as, or larger than, '
               'the original.',
               isBlocking: false));
+        }
+        if (settings.targetSizeBytes != null) {
+          if (settings.targetSizeBytes! <= 0) {
+            errors.add(const ValidationIssue('Target size must be greater than 0.'));
+          } else if (settings.targetSizeBytes! >= media.sizeBytes) {
+            warnings.add(const ValidationIssue(
+                'The target size is not below the original video size — compression may not save space.',
+                isBlocking: false));
+          }
         }
         if (settings.frameRate != null && video.frameRate != null) {
           if (settings.frameRate! > video.frameRate!) {

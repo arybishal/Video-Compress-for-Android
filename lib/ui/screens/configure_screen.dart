@@ -2,14 +2,25 @@ import 'package:flutter/material.dart';
 
 import '../../main.dart';
 import '../../models/models.dart';
+import '../../services/bitrate_calculator.dart';
 import '../../services/ffmpeg_service.dart';
 import '../../services/job_planner.dart';
 import '../../services/settings_validator.dart';
 import '../format.dart';
 import 'processing_screen.dart';
 
-/// Pre-flight configuration for the chosen mode. Shows trade-offs, blocking
-/// validation errors, and non-blocking warnings before anything runs.
+/// Production-ready video compression configuration screen and preset manager.
+/// Structured into 10 organized sections:
+/// 1. Selected video & original file information
+/// 2. Compression profile (High, Medium, Low)
+/// 3. Platform or custom preset
+/// 4. Encoding codec (H.264/AVC & H.265/HEVC as unified choices)
+/// 5. Target size & compression strength slider / manual MB/GB input
+/// 6. Output resolution with aspect-ratio preservation
+/// 7. Output frame rate
+/// 8. Audio settings (keep original or remove audio)
+/// 9. Estimated output information
+/// 10. Compress action
 class ConfigureScreen extends StatefulWidget {
   const ConfigureScreen({
     super.key,
@@ -29,26 +40,174 @@ class ConfigureScreen extends StatefulWidget {
 }
 
 class _ConfigureScreenState extends State<ConfigureScreen> {
-  late CompressionSettings _settings = widget.settings;
+  late CompressionSettings _settings;
   FfmpegCapabilities? _caps;
+  List<CompressionPreset> _presets = [];
+  CompressionPreset? _selectedPreset;
+  late TextEditingController _targetSizeTextController;
+  bool _showAdvancedSettings = false;
+  bool _isLosslessMode = false;
 
   @override
   void initState() {
     super.initState();
-    AppServices.ffmpeg.detectCapabilities().then((c) {
-      if (mounted) setState(() => _caps = c);
+    _settings = widget.settings;
+    _isLosslessMode = widget.settings.mode == CompressionMode.exactLossless;
+
+    _targetSizeTextController = TextEditingController(
+      text: _settings.targetSizeBytes != null
+          ? (_settings.targetSizeBytes! / (1024 * 1024)).toStringAsFixed(1)
+          : '',
+    );
+
+    _loadCapabilitiesAndPresets();
+  }
+
+  @override
+  void dispose() {
+    _targetSizeTextController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadCapabilitiesAndPresets() async {
+    final caps = await AppServices.ffmpeg.detectCapabilities();
+    final presets = await AppServices.presetRepository.loadPresets();
+    if (!mounted) return;
+
+    setState(() {
+      _caps = caps;
+      _presets = presets;
+      if (_settings.presetId != null) {
+        _selectedPreset = presets.firstWhere(
+          (p) => p.id == _settings.presetId,
+          orElse: () => presets.first,
+        );
+      }
+    });
+  }
+
+  void _update(CompressionSettings s) {
+    setState(() {
+      _settings = s;
+      if (s.targetSizeBytes != null) {
+        final mb = s.targetSizeBytes! / (1024 * 1024);
+        final formatted = mb >= 100 ? mb.round().toString() : mb.toStringAsFixed(1);
+        if (_targetSizeTextController.text != formatted) {
+          _targetSizeTextController.text = formatted;
+        }
+      } else {
+        if (_targetSizeTextController.text.isNotEmpty && s.mode != CompressionMode.exactLossless) {
+          _targetSizeTextController.clear();
+        }
+      }
     });
   }
 
   ValidationResult get _validation => SettingsValidator.validate(
         _settings,
         widget.media,
-        caps: _caps == null
-            ? null
-            : FfmpegCapabilitiesLike.from(_caps!),
+        caps: _caps == null ? null : FfmpegCapabilitiesLike.from(_caps!),
       );
 
-  void _update(CompressionSettings s) => setState(() => _settings = s);
+  // -------------------------------------------------- Profile handling --
+  void _applyProfile(CompressionProfile profile) {
+    final video = widget.media.videoStream!;
+    final sourceW = video.width ?? 1920;
+    final sourceH = video.height ?? 1080;
+
+    int? targetW;
+    int? targetH;
+    int crf = 23;
+    QualityPreset quality = QualityPreset.balanced;
+
+    switch (profile) {
+      case CompressionProfile.high:
+        // Preserves original up to 4K
+        final dims = ResolutionPreset.p4k.calculateDimensions(sourceW, sourceH);
+        targetW = dims.$1;
+        targetH = dims.$2;
+        crf = 18;
+        quality = QualityPreset.highQuality;
+        break;
+      case CompressionProfile.medium:
+        // 1080p maximum
+        final dims = ResolutionPreset.p1080.calculateDimensions(sourceW, sourceH);
+        targetW = dims.$1;
+        targetH = dims.$2;
+        crf = 23;
+        quality = QualityPreset.balanced;
+        break;
+      case CompressionProfile.low:
+        // 720p maximum
+        final dims = ResolutionPreset.p720.calculateDimensions(sourceW, sourceH);
+        targetW = dims.$1;
+        targetH = dims.$2;
+        crf = 28;
+        quality = QualityPreset.smaller;
+        break;
+    }
+
+    _update(_settings.copyWith(
+      mode: CompressionMode.highEfficiency,
+      profile: profile,
+      clearPresetId: true,
+      crf: crf,
+      quality: quality,
+      targetWidth: (targetW == sourceW && targetH == sourceH) ? null : targetW,
+      targetHeight: (targetW == sourceW && targetH == sourceH) ? null : targetH,
+      clearResolution: (targetW == sourceW && targetH == sourceH),
+      clearTargetSize: true,
+      clearBitrate: true,
+    ));
+    setState(() {
+      _selectedPreset = null;
+      _isLosslessMode = false;
+    });
+  }
+
+  // --------------------------------------------------- Preset handling --
+  void _applyPreset(CompressionPreset preset) {
+    final video = widget.media.videoStream!;
+    final sourceW = video.width ?? 1920;
+    final sourceH = video.height ?? 1080;
+
+    int? targetW;
+    int? targetH;
+    if (preset.targetHeight != null) {
+      final resPreset = ResolutionPreset.all.firstWhere(
+        (p) => p.standardHeight == preset.targetHeight,
+        orElse: () => ResolutionPreset.p1080,
+      );
+      final dims = resPreset.calculateDimensions(sourceW, sourceH);
+      if (dims.$1 < sourceW || dims.$2 < sourceH) {
+        targetW = dims.$1;
+        targetH = dims.$2;
+      }
+    }
+
+    _update(_settings.copyWith(
+      mode: CompressionMode.highEfficiency,
+      presetId: preset.id,
+      profile: preset.profile,
+      videoCodec: preset.videoCodec,
+      targetSizeBytes: preset.targetSizeBytes,
+      targetWidth: targetW,
+      targetHeight: targetH,
+      clearResolution: targetW == null,
+      frameRate: preset.frameRate,
+      clearFrameRate: preset.frameRate == null,
+      audio: preset.audio,
+      container: preset.container,
+      crf: preset.crf,
+      quality: preset.quality,
+      speedPreset: preset.speedPreset,
+      clearBitrate: true,
+    ));
+    setState(() {
+      _selectedPreset = preset;
+      _isLosslessMode = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -58,59 +217,98 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
     final validation = _validation;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Compression settings')),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-        children: [
-          // Mode selector --------------------------------------------------
-          SegmentedButton<CompressionMode>(
-            segments: const [
-              ButtonSegment(
-                  value: CompressionMode.exactLossless,
-                  label: Text('Lossless')),
-              ButtonSegment(
-                  value: CompressionMode.highEfficiency,
-                  label: Text('Efficient')),
-              ButtonSegment(
-                  value: CompressionMode.custom, label: Text('Custom')),
-            ],
-            selected: {_settings.mode},
-            onSelectionChanged: (sel) {
-              final mode = sel.first;
-              _update(CompressionSettings(
-                mode: mode,
-                container: _settings.container,
-                quality: _settings.quality,
-                audio: mode == CompressionMode.exactLossless
-                    ? AudioAction.copySource
-                    : _settings.audio,
-                hardware: _settings.hardware,
-                keepMetadata: _settings.keepMetadata,
-                videoCodec: VideoCodecOption.h264,
-                losslessEncoder: LosslessEncoder.copy,
-                // High Efficiency defaults to CRF (software); Custom stays
-                // bitrate-based until the user asks for CRF.
-                crf: mode == CompressionMode.highEfficiency ? 23 : null,
-              ));
+      appBar: AppBar(
+        title: const Text('Compress Video'),
+        actions: [
+          IconButton(
+            tooltip: _isLosslessMode
+                ? 'Switch to Lossy Compression'
+                : 'Exact Lossless Mode',
+            icon: Icon(_isLosslessMode ? Icons.tune : Icons.verified_outlined),
+            onPressed: () {
+              setState(() {
+                _isLosslessMode = !_isLosslessMode;
+                if (_isLosslessMode) {
+                  _update(CompressionSettings(
+                    mode: CompressionMode.exactLossless,
+                    container: _settings.container,
+                    losslessEncoder: LosslessEncoder.copy,
+                    audio: AudioAction.copySource,
+                    keepMetadata: _settings.keepMetadata,
+                  ));
+                } else {
+                  _applyProfile(CompressionProfile.medium);
+                }
+              });
             },
           ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+        children: [
+          // 1. Selected video & original file info card
+          _buildSourceInfoSection(theme, media, video),
           const SizedBox(height: 16),
-          ..._modeControls(theme, video),
+
+          if (_isLosslessMode) ...[
+            _buildLosslessBanner(theme),
+            const SizedBox(height: 16),
+            ..._losslessEncoderControl(video),
+            const SizedBox(height: 16),
+            _buildAudioSection(theme, media),
+            const SizedBox(height: 16),
+            _buildContainerSection(theme),
+          ] else ...[
+            // 2. Compression Profile
+            _buildProfileSection(theme),
+            const SizedBox(height: 16),
+
+            // 3. Platform or custom preset
+            _buildPresetSection(theme),
+            const SizedBox(height: 16),
+
+            // 4. Encoding Codec
+            _buildCodecSection(theme),
+            const SizedBox(height: 16),
+
+            // 5. Target Size & Compression Strength
+            _buildTargetSizeSection(theme, media),
+            const SizedBox(height: 16),
+
+            // 6. Output Resolution
+            _buildResolutionSection(theme, video),
+            const SizedBox(height: 16),
+
+            // 7. Output Frame Rate
+            _buildFrameRateSection(theme, video),
+            const SizedBox(height: 16),
+
+            // 8. Audio Settings
+            _buildAudioSection(theme, media),
+            const SizedBox(height: 16),
+
+            // Advanced Collapsible Settings
+            _buildAdvancedSettingsSection(theme),
+          ],
+
           const SizedBox(height: 16),
-          _containerControl(),
-          const SizedBox(height: 8),
-          _metadataControl(),
-          const SizedBox(height: 16),
-          _estimateCard(),
+
+          // 9. Estimated output information
+          _buildEstimateSection(theme, media, video),
+          const SizedBox(height: 12),
+
+          // Validation Warnings & Errors
           if (validation.warnings.isNotEmpty) ...[
-            const SizedBox(height: 12),
             _IssuesCard(issues: validation.warnings, isError: false),
+            const SizedBox(height: 12),
           ],
           if (validation.errors.isNotEmpty) ...[
-            const SizedBox(height: 12),
             _IssuesCard(issues: validation.errors, isError: true),
+            const SizedBox(height: 12),
           ],
-          const SizedBox(height: 20),
+
+          // 10. Compress action
           FilledButton.icon(
             onPressed: validation.canStart
                 ? () => Navigator.of(context).pushReplacement(MaterialPageRoute(
@@ -123,73 +321,833 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
                     ))
                 : null,
             icon: const Icon(Icons.play_arrow),
-            label: const Text('Start compression'),
+            label: Text(
+              _isLosslessMode
+                  ? 'Start Lossless Stream Copy'
+                  : 'Start Compression',
+            ),
           ),
         ],
       ),
     );
   }
 
-  List<Widget> _modeControls(ThemeData theme, StreamInfo video) {
-    switch (_settings.mode) {
-      case CompressionMode.exactLossless:
-        return [
-          _InfoCard(
-            text: 'Exact Lossless never reduces quality. Stream copy (remux) '
-                'repackages the original encoded data without re-encoding it '
-                '— the video and audio data stay untouched, though the '
-                'container, timestamps layout and metadata may change. A '
-                'lossless re-encode decodes every frame, re-encodes it with '
-                'a mathematically lossless setting, and is verified by '
-                'comparing decoded frames. Both can produce a file that is '
-                'the same size as — or larger than — the original.',
-          ),
-          const SizedBox(height: 12),
-          ..._losslessEncoderControl(video),
-          const SizedBox(height: 8),
-          _audioControl(),
-        ];
-      case CompressionMode.highEfficiency:
-        return [
-          _InfoCard(
-            text: 'High Efficiency re-encodes your video with CRF '
-                '(constant quality). The result is high quality but '
-                'mathematically lossy — this is NOT lossless. Resolution '
-                'and frame rate are preserved unless you change them. Lower '
-                'CRF = better quality and a larger file.',
-          ),
-          const SizedBox(height: 12),
-          ..._hePresetControl(),
-          const SizedBox(height: 8),
-          ..._crfControl(),
-          const SizedBox(height: 8),
-          ..._speedControl(),
-          const SizedBox(height: 8),
-          ..._downscaleControl(video),
-          const SizedBox(height: 8),
-          _audioControl(),
-        ];
-      case CompressionMode.custom:
-        return [
-          ..._codecControl(includeCopy: true),
-          const SizedBox(height: 8),
-          ..._bitrateControl(),
-          const SizedBox(height: 8),
-          ..._fpsControl(video),
-          const SizedBox(height: 8),
-          ..._downscaleControl(video, allowCustom: true),
-          const SizedBox(height: 8),
-          ..._hardwareControl(),
-          const SizedBox(height: 8),
-          _audioControl(),
-        ];
-    }
+  // -------------------------------------------------------------------------
+  // 1. Source Video & Original File Information
+  // -------------------------------------------------------------------------
+  Widget _buildSourceInfoSection(
+      ThemeData theme, MediaInfo media, StreamInfo video) {
+    final scheme = theme.colorScheme;
+    final audio = media.audioStream;
+
+    return Card(
+      color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.video_file, color: scheme.primary, size: 28),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    widget.sourceName,
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _InfoBadge(
+                  icon: Icons.sd_card_outlined,
+                  label: formatBytes(media.sizeBytes),
+                ),
+                _InfoBadge(
+                  icon: Icons.timer_outlined,
+                  label: formatDuration(media.durationSeconds),
+                ),
+                _InfoBadge(
+                  icon: Icons.aspect_ratio,
+                  label: '${video.width ?? '?'}×${video.height ?? '?'}',
+                ),
+                _InfoBadge(
+                  icon: Icons.speed,
+                  label: '${video.frameRate?.toStringAsFixed(1) ?? '?'} fps',
+                ),
+                _InfoBadge(
+                  icon: Icons.memory,
+                  label: '${video.codecName.toUpperCase()} (${video.pixFmt ?? 'yuv420p'})',
+                ),
+                _InfoBadge(
+                  icon: audio != null ? Icons.volume_up : Icons.volume_off,
+                  label: audio != null
+                      ? '${audio.codecName.toUpperCase()}${audio.sampleRate != null ? ' ${audio.sampleRate! ~/ 1000}kHz' : ''}'
+                      : 'No Audio',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
-  // ------------------------------------------------------- lossless modes --
-  /// Lossless encoder options (modes B/D/F + stream copy). Unavailable
-  /// options are shown disabled with the exact reason — never silently
-  /// swapped or faked.
+  // -------------------------------------------------------------------------
+  // 2. Compression Profile (High, Medium, Low)
+  // -------------------------------------------------------------------------
+  Widget _buildProfileSection(ThemeData theme) {
+    final currentProfile = _settings.profile ?? CompressionProfile.medium;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('1. Compression Profile',
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold)),
+            if (_settings.profile != null)
+              TextButton.icon(
+                style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                onPressed: () => _applyProfile(currentProfile),
+                icon: const Icon(Icons.refresh, size: 14),
+                label: const Text('Reset profile defaults',
+                    style: TextStyle(fontSize: 12)),
+              ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        SegmentedButton<CompressionProfile>(
+          segments: const [
+            ButtonSegment(
+              value: CompressionProfile.high,
+              label: Text('High'),
+              icon: Icon(Icons.high_quality),
+            ),
+            ButtonSegment(
+              value: CompressionProfile.medium,
+              label: Text('Medium'),
+              icon: Icon(Icons.tune),
+            ),
+            ButtonSegment(
+              value: CompressionProfile.low,
+              label: Text('Low'),
+              icon: Icon(Icons.compress),
+            ),
+          ],
+          selected: {currentProfile},
+          onSelectionChanged: (selected) => _applyProfile(selected.first),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          currentProfile.description,
+          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // 3. Platform or Custom Preset Manager
+  // -------------------------------------------------------------------------
+  Widget _buildPresetSection(ThemeData theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('2. Platform & Custom Presets',
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold)),
+            PopupMenuButton<String>(
+              tooltip: 'Preset options',
+              icon: const Icon(Icons.more_horiz),
+              onSelected: (choice) async {
+                if (choice == 'reset') {
+                  final confirm = await _showConfirmDialog(
+                    title: 'Reset to default presets?',
+                    message: 'This will remove all custom presets and restore built-in platform presets.',
+                  );
+                  if (confirm == true) {
+                    await AppServices.presetRepository.resetToDefaults();
+                    await _loadCapabilitiesAndPresets();
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Presets reset to defaults')),
+                      );
+                    }
+                  }
+                } else if (choice == 'restore') {
+                  await AppServices.presetRepository.restoreMissingDefaults();
+                  await _loadCapabilitiesAndPresets();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Missing defaults restored')),
+                    );
+                  }
+                }
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem(
+                  value: 'restore',
+                  child: Text('Restore missing defaults'),
+                ),
+                PopupMenuItem(
+                  value: 'reset',
+                  child: Text('Reset to default presets'),
+                ),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        InputDecorator(
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
+            contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String?>(
+              value: _selectedPreset?.id,
+              isExpanded: true,
+              hint: const Text('Custom / Manual configuration'),
+              items: [
+                const DropdownMenuItem<String?>(
+                  value: null,
+                  child: Text('Manual configuration (no preset)'),
+                ),
+                for (final preset in _presets)
+                  DropdownMenuItem<String?>(
+                    value: preset.id,
+                    child: Row(
+                      children: [
+                        Icon(
+                          preset.isBuiltIn ? Icons.bookmark_outline : Icons.star_border,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            preset.targetSizeBytes != null
+                                ? '${preset.name} (${formatBytes(preset.targetSizeBytes!)})'
+                                : preset.name,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+              onChanged: (id) {
+                if (id == null) {
+                  setState(() => _selectedPreset = null);
+                  _update(_settings.copyWith(clearPresetId: true));
+                } else {
+                  final chosen = _presets.firstWhere((p) => p.id == id);
+                  _applyPreset(chosen);
+                }
+              },
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            OutlinedButton.icon(
+              icon: const Icon(Icons.bookmark_add_outlined, size: 16),
+              label: const Text('Save as preset'),
+              onPressed: _showSavePresetDialog,
+            ),
+            if (_selectedPreset != null && !_selectedPreset!.isBuiltIn) ...[
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.delete_outline, size: 16),
+                label: const Text('Delete preset'),
+                onPressed: () async {
+                  final confirm = await _showConfirmDialog(
+                    title: 'Delete preset?',
+                    message: 'Are you sure you want to delete "${_selectedPreset!.name}"?',
+                  );
+                  if (confirm == true) {
+                    await AppServices.presetRepository.deleteCustomPreset(_selectedPreset!.id);
+                    await _loadCapabilitiesAndPresets();
+                    setState(() => _selectedPreset = null);
+                    _update(_settings.copyWith(clearPresetId: true));
+                  }
+                },
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // 4. Encoding Codec (Unified H.264/AVC & H.265/HEVC)
+  // -------------------------------------------------------------------------
+  Widget _buildCodecSection(ThemeData theme) {
+    final caps = _caps;
+    final av1Available = caps == null || caps.av1Software;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('3. Video Codec',
+            style: theme.textTheme.titleSmall
+                ?.copyWith(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 6),
+        SegmentedButton<VideoCodecOption>(
+          segments: [
+            const ButtonSegment(
+              value: VideoCodecOption.h264,
+              label: Text('H.264 / AVC'),
+            ),
+            const ButtonSegment(
+              value: VideoCodecOption.hevc,
+              label: Text('H.265 / HEVC'),
+            ),
+            ButtonSegment(
+              value: VideoCodecOption.av1,
+              label: const Text('AV1'),
+              enabled: av1Available,
+            ),
+          ],
+          selected: {_settings.videoCodec},
+          onSelectionChanged: (selected) {
+            _update(_settings.copyWith(
+              videoCodec: selected.first,
+              clearPresetId: true,
+            ));
+          },
+        ),
+        const SizedBox(height: 4),
+        Text(
+          switch (_settings.videoCodec) {
+            VideoCodecOption.h264 =>
+              'Universal compatibility — plays smoothly on virtually all browsers, TVs, and devices.',
+            VideoCodecOption.hevc =>
+              'High compression efficiency — roughly 30-40% smaller than H.264 at identical visual quality.',
+            VideoCodecOption.av1 =>
+              'Next-gen royalty-free codec with highest compression. Slower encoding on mobile.',
+            _ => '',
+          },
+          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // 5. Target Size & Compression Strength
+  // -------------------------------------------------------------------------
+  Widget _buildTargetSizeSection(ThemeData theme, MediaInfo media) {
+    final originalBytes = media.sizeBytes;
+    final currentTargetBytes = _settings.targetSizeBytes;
+    final currentPercentage = currentTargetBytes != null && originalBytes > 0
+        ? (currentTargetBytes / originalBytes * 100.0).clamp(10.0, 100.0)
+        : 80.0;
+
+    return Card(
+      elevation: 0,
+      color: theme.colorScheme.surfaceContainerLow,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('4. Target File Size',
+                    style: theme.textTheme.titleSmall
+                        ?.copyWith(fontWeight: FontWeight.bold)),
+                if (currentTargetBytes != null)
+                  TextButton(
+                    style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                    onPressed: () {
+                      _update(_settings.copyWith(
+                        clearTargetSize: true,
+                        clearBitrate: true,
+                      ));
+                    },
+                    child: const Text('Clear limit', style: TextStyle(fontSize: 12)),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+
+            // Slider: 10% to 100%
+            Row(
+              children: [
+                const Text('10%', style: TextStyle(fontSize: 12)),
+                Expanded(
+                  child: Slider(
+                    value: currentPercentage,
+                    min: 10.0,
+                    max: 100.0,
+                    divisions: 18,
+                    label: '${currentPercentage.round()}% (${formatBytes((originalBytes * currentPercentage / 100).round())})',
+                    onChanged: (percent) {
+                      final targetBytes = (originalBytes * (percent / 100.0)).round();
+                      _update(_settings.copyWith(
+                        targetSizeBytes: targetBytes,
+                        clearBitrate: true,
+                        clearPresetId: true,
+                      ));
+                    },
+                  ),
+                ),
+                const Text('100%', style: TextStyle(fontSize: 12)),
+              ],
+            ),
+
+            // Direct MB input & display
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _targetSizeTextController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Manual target size',
+                      suffixText: 'MB',
+                      isDense: true,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))),
+                    ),
+                    onChanged: (val) {
+                      final mb = double.tryParse(val.trim());
+                      if (mb != null && mb > 0) {
+                        final bytes = (mb * 1024 * 1024).round();
+                        _update(_settings.copyWith(
+                          targetSizeBytes: bytes,
+                          clearBitrate: true,
+                          clearPresetId: true,
+                        ));
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.secondaryContainer,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    currentTargetBytes != null
+                        ? '${formatBytes(currentTargetBytes)} (-${(100 - currentPercentage).toStringAsFixed(0)}%)'
+                        : 'No limit',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.onSecondaryContainer,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // 6. Output Resolution (Aspect-Ratio Preserved)
+  // -------------------------------------------------------------------------
+  Widget _buildResolutionSection(ThemeData theme, StreamInfo video) {
+    final sourceW = video.width ?? 1920;
+    final sourceH = video.height ?? 1080;
+    final activeH = _settings.targetHeight;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('5. Output Resolution',
+            style: theme.textTheme.titleSmall
+                ?.copyWith(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 6),
+        InputDecorator(
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
+            contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<int?>(
+              value: activeH,
+              isExpanded: true,
+              items: [
+                DropdownMenuItem<int?>(
+                  value: null,
+                  child: Text('Keep original ($sourceW×$sourceH)'),
+                ),
+                for (final res in ResolutionPreset.all)
+                  DropdownMenuItem<int?>(
+                    value: res.standardHeight,
+                    child: () {
+                      final dims = res.calculateDimensions(sourceW, sourceH);
+                      final isSame = dims.$1 >= sourceW && dims.$2 >= sourceH;
+                      return Text(
+                        isSame
+                            ? '${res.name} (Source $sourceW×$sourceH - no upscale)'
+                            : '${res.name} (${dims.$1}×${dims.$2})',
+                      );
+                    }(),
+                  ),
+              ],
+              onChanged: (selectedHeight) {
+                if (selectedHeight == null) {
+                  _update(_settings.copyWith(
+                    clearResolution: true,
+                    clearPresetId: true,
+                  ));
+                } else {
+                  final preset = ResolutionPreset.all.firstWhere(
+                    (p) => p.standardHeight == selectedHeight,
+                  );
+                  final dims = preset.calculateDimensions(sourceW, sourceH);
+                  _update(_settings.copyWith(
+                    targetWidth: dims.$1,
+                    targetHeight: dims.$2,
+                    clearPresetId: true,
+                  ));
+                }
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // 7. Output Frame Rate
+  // -------------------------------------------------------------------------
+  Widget _buildFrameRateSection(ThemeData theme, StreamInfo video) {
+    final sourceFps = video.frameRate ?? 30.0;
+    final activeFps = _settings.frameRate;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('6. Output Frame Rate',
+            style: theme.textTheme.titleSmall
+                ?.copyWith(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 6),
+        SegmentedButton<double?>(
+          segments: [
+            ButtonSegment<double?>(
+              value: null,
+              label: Text('Original (${sourceFps.toStringAsFixed(0)})'),
+            ),
+            ButtonSegment<double?>(
+              value: 30.0,
+              label: const Text('30 fps'),
+              enabled: sourceFps >= 29.0,
+            ),
+            ButtonSegment<double?>(
+              value: 60.0,
+              label: const Text('60 fps'),
+              enabled: sourceFps >= 59.0,
+            ),
+            ButtonSegment<double?>(
+              value: 120.0,
+              label: const Text('120 fps'),
+              enabled: sourceFps >= 119.0,
+            ),
+          ],
+          selected: {activeFps},
+          onSelectionChanged: (selected) {
+            final fps = selected.first;
+            _update(_settings.copyWith(
+              frameRate: fps,
+              clearFrameRate: fps == null,
+              clearPresetId: true,
+            ));
+          },
+        ),
+      ],
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // 8. Audio Settings
+  // -------------------------------------------------------------------------
+  Widget _buildAudioSection(ThemeData theme, MediaInfo media) {
+    final hasAudio = media.audioStream != null;
+    if (!hasAudio) {
+      return const Text('This video has no audio stream.',
+          style: TextStyle(fontStyle: FontStyle.italic));
+    }
+
+    final isAudioRemoved = _settings.audio == AudioAction.none;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('7. Audio Settings',
+            style: theme.textTheme.titleSmall
+                ?.copyWith(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 6),
+        SegmentedButton<bool>(
+          segments: const [
+            ButtonSegment(
+              value: false,
+              label: Text('Keep original audio'),
+              icon: Icon(Icons.volume_up),
+            ),
+            ButtonSegment(
+              value: true,
+              label: Text('Remove audio'),
+              icon: Icon(Icons.volume_off),
+            ),
+          ],
+          selected: {isAudioRemoved},
+          onSelectionChanged: (selected) {
+            final remove = selected.first;
+            _update(_settings.copyWith(
+              audio: remove ? AudioAction.none : AudioAction.copySource,
+              clearPresetId: true,
+            ));
+          },
+        ),
+      ],
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Advanced Settings Collapsible
+  // -------------------------------------------------------------------------
+  Widget _buildAdvancedSettingsSection(ThemeData theme) {
+    return Card(
+      elevation: 0,
+      color: theme.colorScheme.surfaceContainerLow,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ExpansionTile(
+        initiallyExpanded: _showAdvancedSettings,
+        onExpansionChanged: (exp) => setState(() => _showAdvancedSettings = exp),
+        title: const Text('Advanced Settings',
+            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+        subtitle: const Text('Container format, hardware acceleration, metadata',
+            style: TextStyle(fontSize: 12)),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        children: [
+          _buildContainerSection(theme),
+          const SizedBox(height: 12),
+          _buildHardwareSection(theme),
+          const SizedBox(height: 12),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Keep metadata'),
+            subtitle: const Text('Title, creation date, rotation and color tags'),
+            value: _settings.keepMetadata,
+            onChanged: (v) => _update(_settings.copyWith(keepMetadata: v)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContainerSection(ThemeData theme) {
+    return InputDecorator(
+      decoration: const InputDecoration(
+        labelText: 'Output container format',
+        border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))),
+        contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+        isDense: true,
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<ContainerOption>(
+          value: _settings.container,
+          isExpanded: true,
+          items: const [
+            DropdownMenuItem(value: ContainerOption.mp4, child: Text('MP4 (highest compatibility)')),
+            DropdownMenuItem(value: ContainerOption.mkv, child: Text('MKV (preserves all streams)')),
+          ],
+          onChanged: (v) => _update(_settings.copyWith(container: v!)),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHardwareSection(ThemeData theme) {
+    return InputDecorator(
+      decoration: const InputDecoration(
+        labelText: 'Hardware encoder acceleration',
+        border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))),
+        contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+        isDense: true,
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<HardwarePreference>(
+          value: _settings.hardware,
+          isExpanded: true,
+          items: const [
+            DropdownMenuItem(
+              value: HardwarePreference.auto,
+              child: Text('Automatic (hardware if available)'),
+            ),
+            DropdownMenuItem(
+              value: HardwarePreference.hardware,
+              child: Text('Force hardware acceleration (faster)'),
+            ),
+            DropdownMenuItem(
+              value: HardwarePreference.software,
+              child: Text('Force software encoding (best quality)'),
+            ),
+          ],
+          onChanged: (v) => _update(_settings.copyWith(hardware: v!)),
+        ),
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // 9. Estimated Output Information Card
+  // -------------------------------------------------------------------------
+  Widget _buildEstimateSection(
+      ThemeData theme, MediaInfo media, StreamInfo video) {
+    final scheme = theme.colorScheme;
+    final w = _settings.targetWidth ?? video.width ?? 1280;
+    final h = _settings.targetHeight ?? video.height ?? 720;
+    final fps = _settings.frameRate ?? video.frameRate ?? 30.0;
+
+    String estimatedSizeStr;
+    int estimatedBytes = 0;
+    int kbps = 0;
+
+    if (_settings.mode == CompressionMode.exactLossless) {
+      estimatedBytes = media.sizeBytes;
+      estimatedSizeStr =
+          '~${formatBytes(media.sizeBytes)} (exact lossless stream copy)';
+    } else {
+      kbps = JobPlanner.resolveVideoBitrateKbps(
+        settings: _settings,
+        media: media,
+        targetWidth: w,
+        targetHeight: h,
+        fps: fps,
+      );
+      estimatedBytes = BitrateCalculator.estimateOutputBytes(
+        videoBitrateKbps: kbps,
+        durationSeconds: media.durationSeconds,
+        audioAction: _settings.audio,
+        sourceAudioBitrate: media.audioStream?.bitRate,
+        hasAudio: media.audioStream != null,
+      );
+      estimatedSizeStr = '~${formatBytes(estimatedBytes)}';
+    }
+
+    final savingsPercent = SizeStats.percentSaved(media.sizeBytes, estimatedBytes);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: scheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.analytics_outlined,
+                  size: 20, color: scheme.onSecondaryContainer),
+              const SizedBox(width: 8),
+              Text(
+                'Estimated Output',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: scheme.onSecondaryContainer,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Estimated size:',
+                  style: TextStyle(fontSize: 13, color: scheme.onSecondaryContainer)),
+              Text(
+                '$estimatedSizeStr (${formatPercent(savingsPercent)})',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  color: scheme.onSecondaryContainer,
+                ),
+              ),
+            ],
+          ),
+          if (kbps > 0) ...[
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Target video bitrate:',
+                    style: TextStyle(fontSize: 12, color: scheme.onSecondaryContainer)),
+                Text('$kbps kbps',
+                    style: TextStyle(fontSize: 12, color: scheme.onSecondaryContainer)),
+              ],
+            ),
+          ],
+          const SizedBox(height: 4),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Effective resolution:',
+                  style: TextStyle(fontSize: 12, color: scheme.onSecondaryContainer)),
+              Text('$w×$h @ ${fps.toStringAsFixed(1)} fps',
+                  style: TextStyle(fontSize: 12, color: scheme.onSecondaryContainer)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Lossless Controls (Exact Stream Copy)
+  // -------------------------------------------------------------------------
+  Widget _buildLosslessBanner(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.tertiaryContainer,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.verified, color: theme.colorScheme.onTertiaryContainer),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Exact Lossless Mode active: Preserves 100% bit-exact streams via stream copy (-c copy). No resolution, frame-rate, or quality loss occurs.',
+              style: TextStyle(
+                fontSize: 12,
+                color: theme.colorScheme.onTertiaryContainer,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<Widget> _losslessEncoderControl(StreamInfo video) {
     final caps = _caps;
     final highBitDepth = widget.media.isHighBitDepth;
@@ -200,18 +1158,18 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
           'High bit-depth sources can only be kept via stream copy.';
     } else {
       if (caps != null && !caps.h264Software) {
-        x264Reason = 'libx264 is not in this app\u2019s FFmpeg build.';
+        x264Reason = 'libx264 is not in this app build.';
       } else if (!const {'yuv420p', 'yuv422p', 'yuv444p'}.contains(pixFmt)) {
         x264Reason = 'Pixel format $pixFmt cannot be preserved by libx264.';
       }
       if (caps != null && !caps.hevcSoftware) {
-        x265Reason = 'libx265 is not in this app\u2019s FFmpeg build.';
+        x265Reason = 'libx265 is not in this app build.';
       } else if (pixFmt != 'yuv420p') {
         x265Reason =
-            'The packaged libx265 only preserves 8-bit $pixFmt sources losslessly for yuv420p — this source is $pixFmt.';
+            'libx265 preserves 8-bit $pixFmt sources losslessly for yuv420p only.';
       }
       if (caps != null && !caps.av1Software) {
-        av1Reason = 'No AV1 encoder (libaom-av1) in this app\u2019s FFmpeg build.';
+        av1Reason = 'No AV1 encoder (libaom-av1) in this app build.';
       } else if (!const {'yuv420p', 'yuv422p', 'yuv444p'}.contains(pixFmt)) {
         av1Reason = 'Pixel format $pixFmt cannot be preserved losslessly by libaom-av1.';
       }
@@ -233,375 +1191,140 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
         child: Column(
           children: [
             tile(LosslessEncoder.copy,
-                'Stream copy (fastest, no re-encoding)', null),
-            tile(LosslessEncoder.x264, 'H.264 lossless — libx264 CRF 0',
+                'Stream copy (fastest, bit-exact remux)', null),
+            tile(LosslessEncoder.x264, 'H.264 lossless (libx264 CRF 0)',
                 x264Reason),
-            tile(LosslessEncoder.x265, 'HEVC lossless — libx265 lossless=1',
+            tile(LosslessEncoder.x265, 'HEVC lossless (libx265 lossless=1)',
                 x265Reason),
-            tile(LosslessEncoder.av1, 'AV1 lossless — libaom-av1 lossless=1',
+            tile(LosslessEncoder.av1, 'AV1 lossless (libaom-av1 lossless=1)',
                 av1Reason),
           ],
         ),
       ),
-      const SizedBox(height: 4),
-      Text(
-        _settings.losslessEncoder == LosslessEncoder.copy
-            ? 'No re-encoding happens, so the video data is bit-for-bit the '
-                'same. Container and metadata can change; size stays about '
-                'the same — this never shrinks the video data itself.'
-            : 'Lossless re-encode: output may be larger than the original. '
-                'Losslessness is verified by comparing decoded frames after '
-                'encoding — it is never assumed.',
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
     ];
   }
 
-  // ------------------------------------------------------ HE CRF presets --
-  /// Modes A, C, G, E as one-tap presets (codec + default CRF).
-  static const _hePresets = [
-    (letter: 'A', label: 'Standard H.264 — CRF 23 (most compatible)',
-        codec: VideoCodecOption.h264, crf: 23),
-    (letter: 'C', label: 'H.265 / HEVC — CRF 26 (smaller, lossy)',
-        codec: VideoCodecOption.hevc, crf: 26),
-    (letter: 'G', label: 'H.265 low CRF — CRF 18 (highest quality, larger)',
-        codec: VideoCodecOption.hevc, crf: 18),
-    (letter: 'E', label: 'AV1 — CRF 30 (smallest, slowest, lossy)',
-        codec: VideoCodecOption.av1, crf: 30),
-  ];
+  // -------------------------------------------------------------------------
+  // Dialogs
+  // -------------------------------------------------------------------------
+  Future<void> _showSavePresetDialog() async {
+    final nameCtrl = TextEditingController();
+    final descCtrl = TextEditingController();
 
-  List<Widget> _hePresetControl() {
-    final caps = _caps;
-    bool available(VideoCodecOption c) {
-      if (caps == null) return true;
-      return switch (c) {
-        VideoCodecOption.h264 => caps.h264Software,
-        VideoCodecOption.hevc => caps.hevcSoftware,
-        VideoCodecOption.av1 => caps.av1Software,
-        _ => false,
-      };
-    }
-
-    return [
-      Text('Preset (all lossy)', style: Theme.of(context).textTheme.titleSmall),
-      RadioGroup<int>(
-        // index of the matching preset, or none when CRF was hand-edited
-        groupValue: _hePresets.indexWhere((p) =>
-            p.codec == _settings.videoCodec && p.crf == _settings.crf),
-        onChanged: (i) {
-          if (i == null || i < 0) return;
-          final p = _hePresets[i];
-          _update(_settings.copyWith(videoCodec: p.codec, crf: p.crf));
-        },
-        child: Column(
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Save as Custom Preset'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            for (var i = 0; i < _hePresets.length; i++)
-              RadioListTile<int>(
-                value: i,
-                enabled: available(_hePresets[i].codec),
-                title: Text(_hePresets[i].label),
-                subtitle: available(_hePresets[i].codec)
-                    ? null
-                    : Text(_hePresets[i].codec == VideoCodecOption.av1
-                        ? 'No AV1 encoder in this app build.'
-                        : 'HEVC encoder not available on this device.'),
+            TextField(
+              controller: nameCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Preset name',
+                hintText: 'e.g. My Fast Share',
               ),
-          ],
-        ),
-      ),
-    ];
-  }
-
-  int get _crfMax => _settings.videoCodec == VideoCodecOption.av1 ? 63 : 51;
-
-  List<Widget> _crfControl() => [
-        Text('Quality — CRF ${_settings.crf ?? 23} '
-            '(lower = better quality, larger file)',
-            style: Theme.of(context).textTheme.titleSmall),
-        Slider(
-          value: (_settings.crf ?? 23).clamp(0, _crfMax).toDouble(),
-          min: 0,
-          max: _crfMax.toDouble(),
-          divisions: _crfMax,
-          label: 'CRF ${_settings.crf ?? 23}',
-          onChanged: (v) => _update(_settings.copyWith(crf: v.round())),
-        ),
-        Text(
-          'This is lossy compression: quality is reduced to save space. '
-          'CRF 18–23 is near-transparent for most videos; CRF $_crfMax is the '
-          'worst quality. Very low CRF can make the file bigger than the original.',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ];
-
-  List<Widget> _speedControl() => [
-        Text('Encoder speed', style: Theme.of(context).textTheme.titleSmall),
-        DropdownButtonFormField<SpeedPreset>(
-          initialValue: _settings.speedPreset,
-          items: [
-            for (final s in SpeedPreset.values)
-              DropdownMenuItem(
-                value: s,
-                child: Text(s == SpeedPreset.medium
-                    ? '${s.label} (recommended)'
-                    : s.label),
-              ),
-          ],
-          onChanged: (v) => _update(_settings.copyWith(speedPreset: v!)),
-        ),
-        const SizedBox(height: 4),
-        Text('Slower settings usually produce a smaller file at the same '
-            'quality, but take longer and use more battery.',
-            style: Theme.of(context).textTheme.bodySmall),
-      ];
-
-  // ------------------------------------------------------------- controls --
-  List<Widget> _codecControl({bool includeCopy = false}) {
-    final caps = _caps;
-    final codecs = <VideoCodecOption, String>{
-      VideoCodecOption.h264: 'H.264 (most compatible)',
-      VideoCodecOption.hevc: 'H.265 / HEVC (smaller, newer devices)',
-      if (caps == null || caps.av1Software)
-        VideoCodecOption.av1: 'AV1 (smallest, slowest)',
-      if (includeCopy) VideoCodecOption.copySource: 'Copy source (no re-encode)',
-    };
-    final available = codecs.entries.where((e) {
-      if (caps == null || e.key == VideoCodecOption.copySource) return true;
-      return switch (e.key) {
-        VideoCodecOption.hevc => caps.hevcSoftware || caps.hevcHardware,
-        VideoCodecOption.av1 => caps.av1Software,
-        _ => caps.h264Software || caps.h264Hardware,
-      };
-    }).toList();
-    return [
-      Text('Video codec', style: Theme.of(context).textTheme.titleSmall),
-      RadioGroup<VideoCodecOption>(
-        groupValue: _settings.videoCodec,
-        onChanged: (v) => _update(_settings.copyWith(videoCodec: v!)),
-        child: Column(
-          children: [
-            for (final e in available)
-              RadioListTile<VideoCodecOption>(
-                title: Text(e.value),
-                value: e.key,
-              ),
-          ],
-        ),
-      ),
-    ];
-  }
-
-  List<Widget> _downscaleControl(StreamInfo video,
-      {bool allowCustom = false}) {
-    final h = video.height ?? 0;
-    final options = <int?>[null];
-    if (h > 1080) options.add(1080);
-    if (h > 720) options.add(720);
-    if (h > 480) options.add(480);
-    if (options.length <= 1 && !allowCustom) return const [];
-    return [
-      Text('Resolution (optional downscale)',
-          style: Theme.of(context).textTheme.titleSmall),
-      DropdownButtonFormField<int?>(
-        initialValue: _settings.targetHeight,
-        items: [
-          for (final o in options)
-            DropdownMenuItem(
-              value: o,
-              child: Text(o == null
-                  ? 'Keep source (${video.width}×${video.height})'
-                  : '${_scaledW(video, o)}×$o'),
+              autofocus: true,
             ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: descCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Description (optional)',
+                hintText: 'e.g. 720p 30fps small size',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Save'),
+          ),
         ],
-        onChanged: (v) => _update(_settings.copyWith(
-          targetHeight: v,
-          targetWidth: v == null ? null : _scaledW(video, v),
-          clearResolution: v == null,
-        )),
       ),
-      const SizedBox(height: 4),
-      Text('Downscaling is never applied unless you choose it.',
-          style: Theme.of(context).textTheme.bodySmall),
-    ];
-  }
-
-  static int _scaledW(StreamInfo video, int targetH) {
-    final w = video.width ?? 0;
-    final h = video.height ?? targetH;
-    final scaled = (w * targetH / h).round();
-    return scaled - (scaled % 2);
-  }
-
-  List<Widget> _bitrateControl() => [
-        Text('Video bitrate (optional)',
-            style: Theme.of(context).textTheme.titleSmall),
-        TextFormField(
-          initialValue: _settings.targetBitrateKbps?.toString(),
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            suffixText: 'kbps',
-            hintText: 'Automatic (based on preset)',
-            helperText: 'Leave empty to estimate from the quality preset.',
-          ),
-          onChanged: (v) {
-            final parsed = int.tryParse(v.trim());
-            _update(_settings.copyWith(
-              targetBitrateKbps: (parsed == null || parsed <= 0) ? null : parsed,
-              clearBitrate: parsed == null || parsed <= 0,
-            ));
-          },
-        ),
-      ];
-
-  List<Widget> _fpsControl(StreamInfo video) => [
-        Text('Frame rate (optional)',
-            style: Theme.of(context).textTheme.titleSmall),
-        TextFormField(
-          initialValue: _settings.frameRate?.toString(),
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: InputDecoration(
-            suffixText: 'fps',
-            hintText: video.frameRate != null
-                ? 'Keep source (${video.frameRate!.toStringAsFixed(2)})'
-                : 'Automatic',
-          ),
-          onChanged: (v) {
-            final parsed = double.tryParse(v.trim());
-            _update(_settings.copyWith(
-              frameRate: (parsed == null || parsed <= 0) ? null : parsed,
-              clearFrameRate: parsed == null || parsed <= 0,
-            ));
-          },
-        ),
-      ];
-
-  List<Widget> _hardwareControl() => [
-        Text('Encoding hardware', style: Theme.of(context).textTheme.titleSmall),
-        DropdownButtonFormField<HardwarePreference>(
-          initialValue: _settings.hardware,
-          items: const [
-            DropdownMenuItem(
-              value: HardwarePreference.auto,
-              child: Text('Automatic (hardware if reliable)'),
-            ),
-            DropdownMenuItem(
-              value: HardwarePreference.hardware,
-              child: Text('Force hardware (faster, slightly lower quality)'),
-            ),
-            DropdownMenuItem(
-              value: HardwarePreference.software,
-              child: Text('Force software (best quality, slower)'),
-            ),
-          ],
-          onChanged: (v) => _update(_settings.copyWith(hardware: v!)),
-        ),
-      ];
-
-  Widget _audioControl() {
-    final hasAudio = widget.media.audioStream != null;
-    if (!hasAudio) {
-      return const Text('This video has no audio stream.',
-          style: TextStyle(fontStyle: FontStyle.italic));
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Audio', style: Theme.of(context).textTheme.titleSmall),
-        DropdownButtonFormField<AudioAction>(
-          initialValue: _settings.audio,
-          items: const [
-            DropdownMenuItem(
-                value: AudioAction.copySource, child: Text('Copy (keep as-is)')),
-            DropdownMenuItem(
-                value: AudioAction.aac128, child: Text('AAC 128 kbps')),
-            DropdownMenuItem(
-                value: AudioAction.aac96, child: Text('AAC 96 kbps')),
-            DropdownMenuItem(
-                value: AudioAction.aac64, child: Text('AAC 64 kbps')),
-            DropdownMenuItem(
-                value: AudioAction.opus96, child: Text('Opus 96 kbps (MKV)')),
-            DropdownMenuItem(value: AudioAction.none, child: Text('Remove audio')),
-          ],
-          onChanged: (v) => _update(_settings.copyWith(audio: v!)),
-        ),
-      ],
     );
+
+    if (saved == true && nameCtrl.text.trim().isNotEmpty) {
+      final newPreset = CompressionPreset(
+        id: 'custom_${DateTime.now().millisecondsSinceEpoch}',
+        name: nameCtrl.text.trim(),
+        description: descCtrl.text.trim(),
+        targetSizeBytes: _settings.targetSizeBytes,
+        profile: _settings.profile,
+        videoCodec: _settings.videoCodec,
+        targetWidth: _settings.targetWidth,
+        targetHeight: _settings.targetHeight,
+        frameRate: _settings.frameRate,
+        audio: _settings.audio,
+        container: _settings.container,
+        crf: _settings.crf,
+        speedPreset: _settings.speedPreset,
+        quality: _settings.quality,
+        isBuiltIn: false,
+      );
+
+      await AppServices.presetRepository.saveCustomPreset(newPreset);
+      await _loadCapabilitiesAndPresets();
+      setState(() => _selectedPreset = newPreset);
+      _update(_settings.copyWith(presetId: newPreset.id));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Preset "${newPreset.name}" saved')),
+        );
+      }
+    }
   }
 
-  Widget _containerControl() => DropdownButtonFormField<ContainerOption>(
-        initialValue: _settings.container,
-        decoration: const InputDecoration(labelText: 'Output container'),
-        items: const [
-          DropdownMenuItem(value: ContainerOption.mp4, child: Text('MP4 (compatible)')),
-          DropdownMenuItem(value: ContainerOption.mkv, child: Text('MKV (keeps more streams)')),
+  Future<bool?> _showConfirmDialog({
+    required String title,
+    required String message,
+  }) {
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Confirm'),
+          ),
         ],
-        onChanged: (v) => _update(_settings.copyWith(container: v!)),
-      );
-
-  Widget _metadataControl() => SwitchListTile(
-        contentPadding: EdgeInsets.zero,
-        title: const Text('Keep metadata'),
-        subtitle: const Text('Title, creation date, rotation and color info.'),
-        value: _settings.keepMetadata,
-        onChanged: (v) => _update(_settings.copyWith(keepMetadata: v)),
-      );
-
-  // ------------------------------------------------------------ estimate --
-  Widget _estimateCard() {
-    final media = widget.media;
-    final video = media.videoStream;
-    String estimate;
-    if (_settings.mode == CompressionMode.exactLossless) {
-      estimate = _settings.losslessEncoder != LosslessEncoder.copy
-          ? 'Lossless re-encode output is typically similar to or larger than the original.'
-          : 'Stream copy output is approximately the same size as the original (${formatBytes(media.sizeBytes)}) — no re-encoding means no size win.';
-    } else if (_settings.videoCodec == VideoCodecOption.copySource) {
-      estimate = 'Stream copy output is approximately ${formatBytes(media.sizeBytes)}.';
-    } else if (_settings.crf != null) {
-      estimate = 'CRF ${_settings.crf} — the final size depends on the '
-          'content. Lower CRF produces a larger, higher-quality file. '
-          'This is lossy compression.';
-    } else {
-      final w = _settings.targetWidth ?? video?.width ?? 1280;
-      final h = _settings.targetHeight ?? video?.height ?? 720;
-      final fps = _settings.frameRate ?? video?.frameRate ?? 30.0;
-      final kbps = _settings.targetBitrateKbps ??
-          JobPlanner.debugEstimatedBitrateKbps(w, h, fps, _settings.quality,
-              sourceVideoBitrate: video?.bitRate);
-      final bytes = (kbps * 1000 / 8) * media.durationSeconds;
-      estimate =
-          'Estimated output ≈ ${formatBytes(bytes.round())} (rough estimate — actual size depends on content).';
-    }
-    return _InfoCard(text: estimate, icon: Icons.straighten_outlined);
+      ),
+    );
   }
 }
 
-class _InfoCard extends StatelessWidget {
-  const _InfoCard({required this.text, this.icon = Icons.info_outline});
-  final String text;
+class _InfoBadge extends StatelessWidget {
+  const _InfoBadge({required this.icon, required this.label});
   final IconData icon;
+  final String label;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: scheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(16),
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 20, color: scheme.onSecondaryContainer),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(text,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: scheme.onSecondaryContainer)),
-          ),
+          Icon(icon, size: 14, color: scheme.primary),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
         ],
       ),
     );

@@ -2,6 +2,10 @@
 /// media logic is unit-testable on the host.
 library;
 
+import 'compression_preset.dart';
+export 'compression_preset.dart';
+export 'resolution_helper.dart';
+
 /// Which compression strategy the user picked.
 enum CompressionMode { exactLossless, highEfficiency, custom }
 
@@ -146,6 +150,9 @@ class CompressionSettings {
     this.targetWidth,
     this.targetHeight,
     this.targetBitrateKbps,
+    this.targetSizeBytes,
+    this.profile,
+    this.presetId,
     this.frameRate,
     this.audio = AudioAction.copySource,
     this.container = ContainerOption.mp4,
@@ -162,6 +169,9 @@ class CompressionSettings {
   final int? targetWidth;
   final int? targetHeight;
   final int? targetBitrateKbps;
+  final int? targetSizeBytes;
+  final CompressionProfile? profile;
+  final String? presetId;
   final double? frameRate;
   final AudioAction audio;
   final ContainerOption container;
@@ -180,11 +190,15 @@ class CompressionSettings {
   final SpeedPreset speedPreset;
 
   CompressionSettings copyWith({
+    CompressionMode? mode,
     VideoCodecOption? videoCodec,
     QualityPreset? quality,
     int? targetWidth,
     int? targetHeight,
     int? targetBitrateKbps,
+    int? targetSizeBytes,
+    CompressionProfile? profile,
+    String? presetId,
     double? frameRate,
     AudioAction? audio,
     ContainerOption? container,
@@ -195,17 +209,24 @@ class CompressionSettings {
     SpeedPreset? speedPreset,
     bool clearResolution = false,
     bool clearBitrate = false,
+    bool clearTargetSize = false,
+    bool clearProfile = false,
+    bool clearPresetId = false,
     bool clearFrameRate = false,
     bool clearCrf = false,
   }) {
     return CompressionSettings(
-      mode: mode,
+      mode: mode ?? this.mode,
       videoCodec: videoCodec ?? this.videoCodec,
       quality: quality ?? this.quality,
       targetWidth: clearResolution ? null : (targetWidth ?? this.targetWidth),
       targetHeight: clearResolution ? null : (targetHeight ?? this.targetHeight),
       targetBitrateKbps:
           clearBitrate ? null : (targetBitrateKbps ?? this.targetBitrateKbps),
+      targetSizeBytes:
+          clearTargetSize ? null : (targetSizeBytes ?? this.targetSizeBytes),
+      profile: clearProfile ? null : (profile ?? this.profile),
+      presetId: clearPresetId ? null : (presetId ?? this.presetId),
       frameRate: clearFrameRate ? null : (frameRate ?? this.frameRate),
       audio: audio ?? this.audio,
       container: container ?? this.container,

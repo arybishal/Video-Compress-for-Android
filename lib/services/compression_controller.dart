@@ -237,6 +237,82 @@ class CompressionController extends ChangeNotifier {
         }
       }
 
+      var finalSettings = settings2;
+
+      // ---- bounded target-size retry ---------------------------------------
+      if (settings2.targetSizeBytes != null && !_cancelled) {
+        final outCheckFile = File(outputPath);
+        if (await outCheckFile.exists()) {
+          final firstPassBytes = await outCheckFile.length();
+          if (firstPassBytes > settings2.targetSizeBytes!) {
+            final currentBitrate = JobPlanner.resolveVideoBitrateKbps(
+              settings: settings2,
+              media: media,
+            );
+            final ratio = settings2.targetSizeBytes! / firstPassBytes;
+            final adjustedBitrate =
+                (currentBitrate * ratio * 0.92).round().clamp(80, 100000);
+
+            diag.section('target size retry');
+            diag.line(
+                'First pass output ($firstPassBytes bytes) exceeded target '
+                '(${settings2.targetSizeBytes} bytes). Retrying once with '
+                'adjusted bitrate $adjustedBitrate kbps (original: $currentBitrate kbps).');
+
+            progress = const JobProgress(
+              stageLabel: 'Refining target size',
+              percent: 0.0,
+            );
+            notifyListeners();
+
+            try {
+              await outCheckFile.delete();
+            } catch (_) {}
+
+            final retrySettings =
+                settings2.copyWith(targetBitrateKbps: adjustedBitrate);
+            final retryPlan = JobPlanner.plan(
+              settings: retrySettings,
+              media: media,
+              caps: FfmpegCapabilitiesLike.from(caps),
+              sourcePath: sourcePath,
+              outputPath: outputPath,
+            );
+
+            for (var i = 0; i < retryPlan.stages.length; i++) {
+              final label = 'Refining size (pass 2)';
+              final args = retryPlan.stages[i];
+              diag.line('retry stage ${i + 1} args: ${args.join(' ')}');
+              final result = await ffmpeg.run(
+                args,
+                stageLabel: label,
+                totalDurationMs: totalMs,
+                onProgress: _onProgress,
+              );
+              diag.line('retry stage ${i + 1} result: rc=${result.returnCode} '
+                  'success=${result.isSuccess} cancelled=${result.cancelled}');
+              if (_cancelled || result.cancelled) {
+                await diag.discard();
+                await _cleanup(jobId);
+                status = JobStatus.cancelled;
+                notifyListeners();
+                return _record(sourceName, media, retrySettings, sw, jobId,
+                    status: JobStatus.cancelled,
+                    codec: _codecLabel(retrySettings,
+                        sourceVideoCodec: inVideo?.codecName));
+              }
+              if (!result.isSuccess) {
+                diag.line('retry stage failed: ${result.output}');
+                throw mapFfmpegFailure(result,
+                    hardwareWasUsed:
+                        retrySettings.hardware != HardwarePreference.software);
+              }
+            }
+            finalSettings = retrySettings;
+          }
+        }
+      }
+
       // ---- verify (lossless modes) / integrity-check (lossy) ---------------
       if (plan.expectedVerification != VerificationExpectation.none) {
         progress = const JobProgress(stageLabel: 'Verifying losslessness');
@@ -252,8 +328,8 @@ class CompressionController extends ChangeNotifier {
           await _cleanup(jobId);
           status = JobStatus.cancelled;
           notifyListeners();
-          return _record(sourceName, media, settings2, sw, jobId,
-              status: JobStatus.cancelled, codec: _codecLabel(settings2));
+          return _record(sourceName, media, finalSettings, sw, jobId,
+              status: JobStatus.cancelled, codec: _codecLabel(finalSettings));
         }
         diag.section('lossless verification');
         diag.line('completed=${verificationResult?.completed} '
@@ -270,10 +346,10 @@ class CompressionController extends ChangeNotifier {
           integrityResult = await _verification.verifyLossyIntegrity(
             source: media,
             outputPath: outputPath,
-            expectedWidth: settings2.targetWidth,
-            expectedHeight: settings2.targetHeight,
+            expectedWidth: finalSettings.targetWidth,
+            expectedHeight: finalSettings.targetHeight,
             expectAudio: media.audioStream != null &&
-                settings2.audio != AudioAction.none,
+                finalSettings.audio != AudioAction.none,
           );
         } catch (_) {
           integrityResult = null; // integrity check itself must not fail the job
@@ -296,12 +372,12 @@ class CompressionController extends ChangeNotifier {
             FfmpegErrorKind.ioError, 'The output file was not created or is empty (0 bytes).');
       }
 
-      String outputCodecLabel = _codecLabel(settings2, sourceVideoCodec: inVideo?.codecName);
+      String outputCodecLabel = _codecLabel(finalSettings, sourceVideoCodec: inVideo?.codecName);
       try {
         final outProbe = await ffmpeg.probe(outputPath, fallbackSizeBytes: outputBytes);
         final probedCodec = outProbe.videoStream?.codecName;
         if (probedCodec != null && probedCodec.isNotEmpty) {
-          outputCodecLabel = _formatVerifiedCodec(settings2, probedCodec);
+          outputCodecLabel = _formatVerifiedCodec(finalSettings, probedCodec);
         }
       } catch (_) {}
       diag.line('verified output codec: $outputCodecLabel');
@@ -310,7 +386,7 @@ class CompressionController extends ChangeNotifier {
       lastRecord = _record(
         sourceName,
         media,
-        settings2,
+        finalSettings,
         sw,
         jobId,
         outputPath: outputPath,

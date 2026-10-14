@@ -1,4 +1,5 @@
 import '../models/models.dart';
+import 'bitrate_calculator.dart';
 import 'settings_validator.dart';
 
 /// Builds validated ffmpeg argument lists for every mode. Pure Dart, no
@@ -207,7 +208,8 @@ class JobPlanner {
     final height = settings.targetHeight ?? video.height ?? 720;
     final fps = settings.frameRate ?? video.frameRate ?? 30.0;
     final codec = settings.videoCodec;
-    final useCrf = settings.crf != null;
+    final hasTargetSize = settings.targetSizeBytes != null;
+    final useCrf = !hasTargetSize && settings.crf != null;
 
     // CRF is a software-encoder feature; MediaCodec has no CRF mode, so a
     // CRF request always selects the software encoder.
@@ -223,9 +225,13 @@ class JobPlanner {
     ];
 
     if (useHardware) {
-      kbps = settings.targetBitrateKbps ??
-          _estimatedBitrateKbps(width, height, fps, settings.quality,
-              sourceVideoBitrate: video.bitRate);
+      kbps = resolveVideoBitrateKbps(
+        settings: settings,
+        media: media,
+        targetWidth: width,
+        targetHeight: height,
+        fps: fps,
+      );
       final hwName =
           codec == VideoCodecOption.hevc ? 'hevc_mediacodec' : 'h264_mediacodec';
       args.addAll(['-c:v', hwName, '-b:v', '${kbps}k',
@@ -244,9 +250,13 @@ class JobPlanner {
       }
       args.addAll(['-pix_fmt', 'yuv420p']);
     } else {
-      kbps = settings.targetBitrateKbps ??
-          _estimatedBitrateKbps(width, height, fps, settings.quality,
-              sourceVideoBitrate: video.bitRate);
+      kbps = resolveVideoBitrateKbps(
+        settings: settings,
+        media: media,
+        targetWidth: width,
+        targetHeight: height,
+        fps: fps,
+      );
       if (swEncoder == 'libaom-av1') {
         args.addAll(['-c:v', swEncoder, '-b:v', '${kbps}k',
           '-cpu-used', '${_aomCpuUsed[settings.speedPreset] ?? 5}']);
@@ -286,16 +296,49 @@ class JobPlanner {
     };
     final rateLabel = useCrf ? 'CRF ${settings.crf}' : null;
 
+    final description = hasTargetSize
+        ? 'Target size encode — $codecLabel at ~${kbps ?? 0} kbps for '
+            '${(settings.targetSizeBytes! / (1024 * 1024)).toStringAsFixed(1)} MB target.'
+        : useCrf
+            ? 'Lossy re-encode — $codecLabel at $rateLabel, ${settings.speedPreset.label} speed. '
+                'Lower CRF = better quality and a larger file. Not lossless.'
+            : 'Lossy re-encode — $codecLabel, ~${kbps ?? 0} kbps, ${settings.quality.label}. '
+                'Quality is high but this is not mathematically lossless.';
+
     return CompressionPlan(
       stages: [args],
-      description: useCrf
-          ? 'Lossy re-encode — $codecLabel at $rateLabel, ${settings.speedPreset.label} speed. '
-              'Lower CRF = better quality and a larger file. Not lossless.'
-          : 'Lossy re-encode — $codecLabel, ~${kbps ?? 0} kbps, ${settings.quality.label}. '
-              'Quality is high but this is not mathematically lossless.',
+      description: description,
       isLossless: false,
       expectedVerification: VerificationExpectation.none,
     );
+  }
+
+  /// Resolves the target video bitrate in kbps for [settings] and [media].
+  static int resolveVideoBitrateKbps({
+    required CompressionSettings settings,
+    required MediaInfo media,
+    int? targetWidth,
+    int? targetHeight,
+    double? fps,
+  }) {
+    if (settings.targetBitrateKbps != null) {
+      return settings.targetBitrateKbps!;
+    }
+    if (settings.targetSizeBytes != null) {
+      return BitrateCalculator.calculateVideoBitrateKbps(
+        targetSizeBytes: settings.targetSizeBytes!,
+        durationSeconds: media.durationSeconds,
+        audioAction: settings.audio,
+        sourceAudioBitrate: media.audioStream?.bitRate,
+        hasAudio: media.audioStream != null,
+      );
+    }
+    final video = media.videoStream;
+    final w = targetWidth ?? settings.targetWidth ?? video?.width ?? 1280;
+    final h = targetHeight ?? settings.targetHeight ?? video?.height ?? 720;
+    final f = fps ?? settings.frameRate ?? video?.frameRate ?? 30.0;
+    return _estimatedBitrateKbps(w, h, f, settings.quality,
+        sourceVideoBitrate: video?.bitRate);
   }
 
   /// Software encoder name actually present in the packaged build for

@@ -7,6 +7,7 @@ import 'services/diagnostic_export_service.dart';
 import 'services/ffmpeg_service.dart';
 import 'services/job_repository.dart';
 import 'services/native_exporter.dart';
+import 'services/preset_repository.dart';
 import 'services/temp_manager.dart';
 import 'ui/screens/home_screen.dart';
 import 'ui/screens/onboarding_screen.dart';
@@ -26,6 +27,7 @@ class AppServices {
     ffmpeg: ffmpeg,
     exporter: exporter,
   );
+  static final presetRepository = PresetRepository();
   static final compressionController = CompressionController(
     ffmpeg: ffmpeg,
     tempManager: tempManager,
