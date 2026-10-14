@@ -3,6 +3,9 @@
          On API 29+ (Android 10+), scoped storage / MediaStore operates without storage permissions. -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
+    <!-- Optional notification permission for long-running jobs on Android 13+ (API 33+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:label="PureCompress"
         android:name="${applicationName}"

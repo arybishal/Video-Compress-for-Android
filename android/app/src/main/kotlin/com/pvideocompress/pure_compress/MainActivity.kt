@@ -17,6 +17,7 @@ import java.util.UUID
 class MainActivity : FlutterActivity() {
 
     private var pendingPick: MethodChannel.Result? = null
+    private var pendingNotificationPermission: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -48,11 +49,57 @@ class MainActivity : FlutterActivity() {
                         val stat = StatFs(applicationInfo.dataDir)
                         result.success(stat.availableBytes)
                     }
+                    "checkNotificationPermission" -> {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                                this,
+                                android.Manifest.permission.POST_NOTIFICATIONS
+                            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                            result.success(if (granted) "granted" else "denied")
+                        } else {
+                            val enabled = androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled()
+                            result.success(if (enabled) "granted" else "denied")
+                        }
+                    }
+                    "requestNotificationPermission" -> {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            pendingNotificationPermission = result
+                            requestPermissions(
+                                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                                RC_NOTIF_PERMISSION
+                            )
+                        } else {
+                            val enabled = androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled()
+                            result.success(if (enabled) "granted" else "denied")
+                        }
+                    }
+                    "openAppSettings" -> {
+                        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.fromParts("package", packageName, null)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(intent)
+                        result.success(true)
+                    }
                     else -> result.notImplemented()
                 }
             } catch (e: Exception) {
                 result.error("native_error", e.message, null)
             }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == RC_NOTIF_PERMISSION) {
+            val pending = pendingNotificationPermission ?: return
+            pendingNotificationPermission = null
+            val granted = grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED
+            pending.success(if (granted) "granted" else "denied")
         }
     }
 
@@ -187,5 +234,6 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val RC_PICK = 0x9C
+        private const val RC_NOTIF_PERMISSION = 0x9D
     }
 }

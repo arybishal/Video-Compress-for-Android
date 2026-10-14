@@ -76,9 +76,28 @@ class _HomeScreenState extends State<HomeScreen> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: Text(AppConfig.appName,
-            style: theme.textTheme.headlineSmall
-                ?.copyWith(fontWeight: FontWeight.w700)),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.asset(
+                'assets/images/logo.png',
+                width: 28,
+                height: 28,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) =>
+                    const Icon(Icons.movie_creation_outlined),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              AppConfig.appName,
+              style: theme.textTheme.headlineSmall
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings_outlined),

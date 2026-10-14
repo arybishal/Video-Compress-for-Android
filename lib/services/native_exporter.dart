@@ -58,6 +58,33 @@ class NativeExporter {
   Future<int?> freeBytes() =>
       _channel.invokeMethod<int>('freeBytes', {'path': ''}).catchError((_) => null);
 
+  /// Checks notification permission status ('granted' or 'denied').
+  Future<String> checkNotificationPermission() async {
+    try {
+      final res = await _channel.invokeMethod<String>('checkNotificationPermission');
+      return res ?? 'unknown';
+    } catch (_) {
+      return 'unknown';
+    }
+  }
+
+  /// Requests notification permission on Android 13+ (POST_NOTIFICATIONS).
+  Future<String> requestNotificationPermission() async {
+    try {
+      final res = await _channel.invokeMethod<String>('requestNotificationPermission');
+      return res ?? 'denied';
+    } catch (_) {
+      return 'denied';
+    }
+  }
+
+  /// Opens system app settings for PureCompress so user can modify permissions.
+  Future<void> openAppSettings() async {
+    try {
+      await _channel.invokeMethod<void>('openAppSettings');
+    } catch (_) {}
+  }
+
   static String _mimeTypeFor(String name) {
     final lower = name.toLowerCase();
     if (lower.endsWith('.mkv')) return 'video/x-matroska';
