@@ -116,10 +116,39 @@ class _ResultsScreenState extends State<ResultsScreen> {
                       formatDuration(record.durationMs / 1000)),
                   _kv('Mode', _modeLabel()),
                   _kv('Output codec', record.videoCodec),
+                  if (record.hdrStatus != null)
+                    _kv('Color & HDR', record.hdrStatus!,
+                        highlight: record.hdrMode != null && record.hdrMode != HdrMode.off,
+                        highlightColor: theme.colorScheme.primary),
+                  if (record.outputPixFmt != null)
+                    _kv('Pixel format',
+                        '${record.outputPixFmt}${record.outputBitDepth != null ? ' (${record.outputBitDepth}-bit)' : ''}'),
                 ],
               ),
             ),
           ),
+          if (record.hdrStatus != null && record.hdrMode != null && record.hdrMode != HdrMode.off) ...[
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: Icon(
+                  Icons.hdr_on,
+                  color: theme.colorScheme.primary,
+                  size: 28,
+                ),
+                title: Text(record.hdrStatus!),
+                subtitle: Text(switch (record.hdrMode!) {
+                  HdrMode.hdrEffect =>
+                    'Processed with dynamic contrast and highlight/shadow tone-mapping.',
+                  HdrMode.sdrToHdr =>
+                    'Converted to 10-bit HDR10 with BT.2020 PQ color space and mastering metadata.',
+                  HdrMode.preserveHdr =>
+                    'Retained source 10-bit HDR color gamut and transfer curve.',
+                  HdrMode.off => '',
+                }),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           if (record.mode == CompressionMode.exactLossless)
             _verificationTile(v)

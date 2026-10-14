@@ -373,14 +373,48 @@ class CompressionController extends ChangeNotifier {
       }
 
       String outputCodecLabel = _codecLabel(finalSettings, sourceVideoCodec: inVideo?.codecName);
+      String? outPixFmt;
+      String? outColorPrimaries;
+      String? outColorTransfer;
+      String? outColorSpace;
+      int? outBitDepth;
+      String? hdrStatus;
+
       try {
         final outProbe = await ffmpeg.probe(outputPath, fallbackSizeBytes: outputBytes);
-        final probedCodec = outProbe.videoStream?.codecName;
+        final probedVideo = outProbe.videoStream;
+        final probedCodec = probedVideo?.codecName;
         if (probedCodec != null && probedCodec.isNotEmpty) {
           outputCodecLabel = _formatVerifiedCodec(finalSettings, probedCodec);
         }
+        outPixFmt = probedVideo?.pixFmt;
+        outColorPrimaries = probedVideo?.colorPrimaries;
+        outColorTransfer = probedVideo?.colorTransfer;
+        outColorSpace = probedVideo?.colorSpace;
+        outBitDepth = probedVideo?.bitDepth;
+
+        if (finalSettings.hdrMode == HdrMode.hdrEffect) {
+          hdrStatus = 'HDR Effect (${(finalSettings.hdrIntensity * 100).round()}%)';
+        } else if (probedVideo != null && probedVideo.isHdr) {
+          final prim = probedVideo.colorPrimaries != null && probedVideo.colorPrimaries!.isNotEmpty
+              ? probedVideo.colorPrimaries!
+              : 'BT.2020';
+          final trc = probedVideo.colorTransfer != null && probedVideo.colorTransfer!.isNotEmpty
+              ? probedVideo.colorTransfer!
+              : 'PQ';
+          hdrStatus = 'HDR10 ($prim / $trc, ${outBitDepth ?? 10}-bit)';
+        } else if (finalSettings.hdrMode == HdrMode.sdrToHdr) {
+          hdrStatus = 'HDR10 (10-bit BT.2020)';
+        } else {
+          hdrStatus = (outBitDepth != null && outBitDepth > 8)
+              ? '$outBitDepth-bit SDR'
+              : 'SDR (8-bit)';
+        }
       } catch (_) {}
       diag.line('verified output codec: $outputCodecLabel');
+      if (hdrStatus != null) {
+        diag.line('verified output HDR/color: $hdrStatus (pixFmt=$outPixFmt, prim=$outColorPrimaries, trc=$outColorTransfer, bitDepth=$outBitDepth)');
+      }
 
       status = JobStatus.completed;
       lastRecord = _record(
@@ -394,6 +428,13 @@ class CompressionController extends ChangeNotifier {
         codec: outputCodecLabel,
         verification: verificationResult,
         integrity: integrityResult,
+        outputPixFmt: outPixFmt,
+        outputColorPrimaries: outColorPrimaries,
+        outputColorTransfer: outColorTransfer,
+        outputColorSpace: outColorSpace,
+        outputBitDepth: outBitDepth,
+        hdrMode: finalSettings.hdrMode,
+        hdrStatus: hdrStatus,
       );
       await jobRepository.add(lastRecord!);
       progress = const JobProgress(stageLabel: 'Done', percent: 1.0);
@@ -536,6 +577,13 @@ class CompressionController extends ChangeNotifier {
     VerificationResult? verification,
     IntegrityResult? integrity,
     String? errorCode,
+    String? outputPixFmt,
+    String? outputColorPrimaries,
+    String? outputColorTransfer,
+    String? outputColorSpace,
+    int? outputBitDepth,
+    HdrMode? hdrMode,
+    String? hdrStatus,
   }) {
     final record = JobRecord(
       id: jobId,
@@ -551,6 +599,13 @@ class CompressionController extends ChangeNotifier {
       verification: verification,
       integrity: integrity,
       errorCode: errorCode,
+      outputPixFmt: outputPixFmt,
+      outputColorPrimaries: outputColorPrimaries,
+      outputColorTransfer: outputColorTransfer,
+      outputColorSpace: outputColorSpace,
+      outputBitDepth: outputBitDepth,
+      hdrMode: hdrMode ?? settings.hdrMode,
+      hdrStatus: hdrStatus,
     );
     lastRecord = record;
     return record;

@@ -3,7 +3,9 @@
 library;
 
 import 'compression_preset.dart';
+import 'hdr_options.dart';
 export 'compression_preset.dart';
+export 'hdr_options.dart';
 export 'resolution_helper.dart';
 
 /// Which compression strategy the user picked.
@@ -100,6 +102,32 @@ class StreamInfo {
   bool get isVideo => codecType == 'video';
   bool get isAudio => codecType == 'audio';
   bool get isSubtitle => codecType == 'subtitle';
+
+  bool get isHdr => HdrCharacteristics.isHdrStream(
+        transfer: colorTransfer,
+        primaries: colorPrimaries,
+        pixFmt: pixFmt,
+      );
+
+  int get bitDepth => (pixFmt?.contains('10') == true)
+      ? 10
+      : (pixFmt?.contains('12') == true)
+          ? 12
+          : 8;
+
+  String get colorSummary {
+    final parts = <String>[];
+    if (colorPrimaries != null && colorPrimaries!.isNotEmpty) {
+      parts.add(HdrCharacteristics.formatPrimaries(colorPrimaries));
+    }
+    if (colorTransfer != null && colorTransfer!.isNotEmpty) {
+      parts.add(HdrCharacteristics.formatTransfer(colorTransfer));
+    }
+    if (bitDepth != 8) {
+      parts.add('$bitDepth-bit');
+    }
+    return parts.isEmpty ? 'SDR (8-bit)' : parts.join(', ');
+  }
 }
 
 /// Result of probing a source file with ffprobe.
@@ -139,6 +167,9 @@ class MediaInfo {
   bool get isHighBitDepth =>
       videoStream?.pixFmt?.contains('10') == true ||
       videoStream?.pixFmt?.contains('12') == true;
+
+  /// True if the primary video stream has HDR color characteristics.
+  bool get isHdrSource => videoStream?.isHdr ?? false;
 }
 
 /// Fully validated, ready-to-execute compression request.
@@ -161,6 +192,8 @@ class CompressionSettings {
     this.losslessEncoder = LosslessEncoder.copy,
     this.crf,
     this.speedPreset = SpeedPreset.medium,
+    this.hdrMode = HdrMode.off,
+    this.hdrIntensity = 0.5,
   });
 
   final CompressionMode mode;
@@ -189,6 +222,12 @@ class CompressionSettings {
   /// Software encoder speed/effort preset.
   final SpeedPreset speedPreset;
 
+  /// HDR color management and enhancement strategy.
+  final HdrMode hdrMode;
+
+  /// Intensity factor for [HdrMode.hdrEffect] (0.1 to 1.0, default 0.5).
+  final double hdrIntensity;
+
   CompressionSettings copyWith({
     CompressionMode? mode,
     VideoCodecOption? videoCodec,
@@ -207,6 +246,8 @@ class CompressionSettings {
     LosslessEncoder? losslessEncoder,
     int? crf,
     SpeedPreset? speedPreset,
+    HdrMode? hdrMode,
+    double? hdrIntensity,
     bool clearResolution = false,
     bool clearBitrate = false,
     bool clearTargetSize = false,
@@ -235,6 +276,8 @@ class CompressionSettings {
       losslessEncoder: losslessEncoder ?? this.losslessEncoder,
       crf: clearCrf ? null : (crf ?? this.crf),
       speedPreset: speedPreset ?? this.speedPreset,
+      hdrMode: hdrMode ?? this.hdrMode,
+      hdrIntensity: hdrIntensity ?? this.hdrIntensity,
     );
   }
 }
@@ -311,6 +354,13 @@ class JobRecord {
     this.integrity,
     this.status = JobStatus.completed,
     this.errorCode,
+    this.outputPixFmt,
+    this.outputColorPrimaries,
+    this.outputColorTransfer,
+    this.outputColorSpace,
+    this.outputBitDepth,
+    this.hdrMode,
+    this.hdrStatus,
   });
 
   final String id;
@@ -328,6 +378,15 @@ class JobRecord {
   final IntegrityResult? integrity;
   final JobStatus status;
   final String? errorCode;
+
+  /// Verified output color and dynamic range characteristics.
+  final String? outputPixFmt;
+  final String? outputColorPrimaries;
+  final String? outputColorTransfer;
+  final String? outputColorSpace;
+  final int? outputBitDepth;
+  final HdrMode? hdrMode;
+  final String? hdrStatus;
 
   int get bytesDelta => originalBytes - outputBytes;
 

@@ -49,6 +49,13 @@ class JobRepository {
         'outputPath': r.outputPath,
         'status': r.status.name,
         'errorCode': r.errorCode,
+        'outputPixFmt': r.outputPixFmt,
+        'outputColorPrimaries': r.outputColorPrimaries,
+        'outputColorTransfer': r.outputColorTransfer,
+        'outputColorSpace': r.outputColorSpace,
+        'outputBitDepth': r.outputBitDepth,
+        'hdrMode': r.hdrMode?.name,
+        'hdrStatus': r.hdrStatus,
         'verification': r.verification == null
             ? null
             : {
@@ -71,6 +78,7 @@ class JobRepository {
   static JobRecord _fromJson(Map<String, dynamic> m) {
     final v = m['verification'] as Map<String, dynamic>?;
     final i = m['integrity'] as Map<String, dynamic>?;
+    final hdrModeName = m['hdrMode'] as String?;
     return JobRecord(
       id: m['id'] as String,
       createdAt: DateTime.parse(m['createdAt'] as String),
@@ -89,6 +97,18 @@ class JobRepository {
         orElse: () => JobStatus.completed,
       ),
       errorCode: m['errorCode'] as String?,
+      outputPixFmt: m['outputPixFmt'] as String?,
+      outputColorPrimaries: m['outputColorPrimaries'] as String?,
+      outputColorTransfer: m['outputColorTransfer'] as String?,
+      outputColorSpace: m['outputColorSpace'] as String?,
+      outputBitDepth: (m['outputBitDepth'] as num?)?.toInt(),
+      hdrMode: hdrModeName != null
+          ? HdrMode.values.firstWhere(
+              (e) => e.name == hdrModeName,
+              orElse: () => HdrMode.off,
+            )
+          : null,
+      hdrStatus: m['hdrStatus'] as String?,
       verification: v == null
           ? null
           : VerificationResult(

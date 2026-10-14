@@ -45,6 +45,12 @@ class SettingsValidator {
 
     // ---------- Exact Lossless ----------
     if (settings.mode == CompressionMode.exactLossless) {
+      if (settings.hdrMode == HdrMode.sdrToHdr ||
+          settings.hdrMode == HdrMode.hdrEffect) {
+        errors.add(const ValidationIssue(
+            'Exact Lossless mode cannot apply HDR conversions or visual effects. '
+            'Switch to High Efficiency or Custom mode.'));
+      }
       if (settings.targetWidth != null ||
           settings.targetHeight != null ||
           settings.targetBitrateKbps != null ||
@@ -130,6 +136,44 @@ class SettingsValidator {
     // ---------- High Efficiency / Custom ----------
     if (settings.mode == CompressionMode.highEfficiency ||
         settings.mode == CompressionMode.custom) {
+      // HDR mode validation for lossy/re-encode
+      if (settings.hdrMode == HdrMode.sdrToHdr) {
+        if (settings.videoCodec == VideoCodecOption.copySource) {
+          errors.add(const ValidationIssue(
+              'Stream copy cannot convert SDR to HDR. Choose an encoding codec like HEVC.'));
+        } else if (settings.videoCodec != VideoCodecOption.hevc) {
+          errors.add(ValidationIssue(
+              'SDR to HDR conversion requires HEVC (H.265) 10-bit encoding. '
+              '${settings.videoCodec.name.toUpperCase()} cannot output genuine HDR10.'));
+        }
+        if (media.isHdrSource) {
+          warnings.add(const ValidationIssue(
+              'The source video is already HDR. SDR to HDR conversion may alter original HDR mastering.',
+              isBlocking: false));
+        }
+        if (settings.hardware == HardwarePreference.hardware) {
+          warnings.add(const ValidationIssue(
+              'Hardware encoding selected: full HDR10 mastering metadata is best generated using Auto or Software encoding.',
+              isBlocking: false));
+        }
+      } else if (settings.hdrMode == HdrMode.hdrEffect) {
+        if (settings.videoCodec == VideoCodecOption.copySource) {
+          errors.add(const ValidationIssue(
+              'HDR Effect visual filters cannot be applied in stream copy mode.'));
+        }
+      } else if (settings.hdrMode == HdrMode.preserveHdr) {
+        if (!media.isHdrSource) {
+          warnings.add(const ValidationIssue(
+              'Source video does not appear to be HDR. Original SDR color characteristics will be preserved.',
+              isBlocking: false));
+        } else if (settings.videoCodec == VideoCodecOption.h264 &&
+            settings.videoCodec != VideoCodecOption.copySource) {
+          warnings.add(const ValidationIssue(
+              'H.264 standard profile is 8-bit and will downconvert 10-bit HDR to 8-bit SDR. Select HEVC to preserve 10-bit HDR.',
+              isBlocking: false));
+        }
+      }
+
       if (settings.videoCodec == VideoCodecOption.copySource &&
           settings.mode == CompressionMode.custom) {
         if (!videoCodecFitsContainer(video.codecName, settings.container)) {

@@ -12,12 +12,17 @@ class BitrateCalculator {
     required AudioAction audioAction,
     int? sourceAudioBitrate,
     bool hasAudio = true,
+    HdrMode hdrMode = HdrMode.off,
   }) {
     if (durationSeconds <= 0) return 1000;
 
     // Safety margin for container/muxing overhead (MP4/MKV moov/idx/headers)
     // 4% overhead is standard and ensures target size is not exceeded.
-    final usableBytes = targetSizeBytes * 0.96;
+    // 10-bit HDR streams have slightly more metadata.
+    final overheadMargin = (hdrMode == HdrMode.sdrToHdr || hdrMode == HdrMode.preserveHdr)
+        ? 0.95
+        : 0.96;
+    final usableBytes = targetSizeBytes * overheadMargin;
 
     // Determine audio bitrate in bits per second
     double audioBps = 0;
@@ -36,15 +41,16 @@ class BitrateCalculator {
     final audioBytes = (audioBps / 8.0) * durationSeconds;
     final videoBytes = usableBytes - audioBytes;
 
+    final floorKbps = (hdrMode == HdrMode.sdrToHdr || hdrMode == HdrMode.preserveHdr) ? 250 : 100;
     if (videoBytes <= 0) {
       // Audio or container alone exceeds target size; return minimum floor
-      return 100;
+      return floorKbps;
     }
 
     final videoBps = (videoBytes * 8.0) / durationSeconds;
     final videoKbps = (videoBps / 1000.0).round();
 
-    return videoKbps.clamp(100, 100000);
+    return videoKbps.clamp(floorKbps, 100000);
   }
 
   /// Calculates estimated output size in bytes given video bitrate, audio, and duration.
@@ -54,6 +60,7 @@ class BitrateCalculator {
     required AudioAction audioAction,
     int? sourceAudioBitrate,
     bool hasAudio = true,
+    HdrMode hdrMode = HdrMode.off,
   }) {
     if (durationSeconds <= 0) return 0;
     double audioKbps = 0;
@@ -70,7 +77,8 @@ class BitrateCalculator {
     }
     final totalKbps = videoBitrateKbps + audioKbps;
     final rawBytes = (totalKbps * 1000 / 8.0) * durationSeconds;
-    // Add 2% muxing overhead for realistic estimate
-    return (rawBytes * 1.02).round();
+    // Add 2% muxing overhead (2.5% for 10-bit HDR) for realistic estimate
+    final muxFactor = (hdrMode == HdrMode.sdrToHdr || hdrMode == HdrMode.preserveHdr) ? 1.025 : 1.02;
+    return (rawBytes * muxFactor).round();
   }
 }

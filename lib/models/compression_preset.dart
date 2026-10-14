@@ -29,6 +29,8 @@ class CompressionPreset {
     this.speedPreset = SpeedPreset.medium,
     this.quality = QualityPreset.balanced,
     this.isBuiltIn = false,
+    this.hdrMode,
+    this.hdrIntensity,
   });
 
   final String id;
@@ -46,6 +48,8 @@ class CompressionPreset {
   final SpeedPreset speedPreset;
   final QualityPreset quality;
   final bool isBuiltIn;
+  final HdrMode? hdrMode;
+  final double? hdrIntensity;
 
   double? get targetSizeMB =>
       targetSizeBytes == null ? null : targetSizeBytes! / (1024 * 1024);
@@ -66,10 +70,14 @@ class CompressionPreset {
     SpeedPreset? speedPreset,
     QualityPreset? quality,
     bool? isBuiltIn,
+    HdrMode? hdrMode,
+    double? hdrIntensity,
     bool clearTargetSize = false,
     bool clearResolution = false,
     bool clearFrameRate = false,
     bool clearCrf = false,
+    bool clearHdrMode = false,
+    bool clearHdrIntensity = false,
   }) {
     return CompressionPreset(
       id: id ?? this.id,
@@ -90,6 +98,9 @@ class CompressionPreset {
       speedPreset: speedPreset ?? this.speedPreset,
       quality: quality ?? this.quality,
       isBuiltIn: isBuiltIn ?? this.isBuiltIn,
+      hdrMode: clearHdrMode ? null : (hdrMode ?? this.hdrMode),
+      hdrIntensity:
+          clearHdrIntensity ? null : (hdrIntensity ?? this.hdrIntensity),
     );
   }
 
@@ -109,6 +120,8 @@ class CompressionPreset {
         'speedPreset': speedPreset.name,
         'quality': quality.name,
         'isBuiltIn': isBuiltIn,
+        'hdrMode': hdrMode?.name,
+        'hdrIntensity': hdrIntensity,
       };
 
   factory CompressionPreset.fromJson(Map<String, dynamic> json) {
@@ -138,6 +151,10 @@ class CompressionPreset {
       quality: QualityPreset.values.asNameMap()[json['quality']] ??
           QualityPreset.balanced,
       isBuiltIn: json['isBuiltIn'] as bool? ?? false,
+      hdrMode: json['hdrMode'] != null
+          ? HdrMode.values.asNameMap()[json['hdrMode']]
+          : null,
+      hdrIntensity: (json['hdrIntensity'] as num?)?.toDouble(),
     );
   }
 

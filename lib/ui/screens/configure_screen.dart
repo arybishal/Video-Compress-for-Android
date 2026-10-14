@@ -201,6 +201,8 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
       crf: preset.crf,
       quality: preset.quality,
       speedPreset: preset.speedPreset,
+      hdrMode: preset.hdrMode ?? _settings.hdrMode,
+      hdrIntensity: preset.hdrIntensity ?? _settings.hdrIntensity,
       clearBitrate: true,
     ));
     setState(() {
@@ -286,6 +288,10 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
 
             // 8. Audio Settings
             _buildAudioSection(theme, media),
+            const SizedBox(height: 16),
+
+            // 9. HDR & Color
+            _buildHdrSection(theme, media, video),
             const SizedBox(height: 16),
 
             // Advanced Collapsible Settings
@@ -387,6 +393,10 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
                 _InfoBadge(
                   icon: Icons.memory,
                   label: '${video.codecName.toUpperCase()} (${video.pixFmt ?? 'yuv420p'})',
+                ),
+                _InfoBadge(
+                  icon: video.isHdr ? Icons.hdr_on : Icons.palette_outlined,
+                  label: video.colorSummary,
                 ),
                 _InfoBadge(
                   icon: audio != null ? Icons.volume_up : Icons.volume_off,
@@ -930,6 +940,212 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
   }
 
   // -------------------------------------------------------------------------
+  // 8. HDR & Color Section
+  // -------------------------------------------------------------------------
+  Widget _buildHdrSection(ThemeData theme, MediaInfo media, StreamInfo video) {
+    final scheme = theme.colorScheme;
+    final isSourceHdr = video.isHdr;
+    final activeMode = _settings.hdrMode;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.hdr_on, color: scheme.primary, size: 20),
+                const SizedBox(width: 8),
+                Text('8. HDR & Color',
+                    style: theme.textTheme.titleSmall
+                        ?.copyWith(fontWeight: FontWeight.bold)),
+              ],
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: isSourceHdr
+                    ? scheme.primaryContainer
+                    : scheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                isSourceHdr ? 'Source: HDR' : 'Source: SDR',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: isSourceHdr
+                      ? scheme.onPrimaryContainer
+                      : scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        SegmentedButton<HdrMode>(
+          segments: const [
+            ButtonSegment(
+              value: HdrMode.off,
+              label: Text('Off'),
+            ),
+            ButtonSegment(
+              value: HdrMode.hdrEffect,
+              label: Text('Effect'),
+            ),
+            ButtonSegment(
+              value: HdrMode.sdrToHdr,
+              label: Text('SDR→HDR'),
+            ),
+            ButtonSegment(
+              value: HdrMode.preserveHdr,
+              label: Text('Preserve'),
+            ),
+          ],
+          selected: {activeMode},
+          onSelectionChanged: (selected) {
+            final mode = selected.first;
+            _update(_settings.copyWith(
+              hdrMode: mode,
+              clearPresetId: true,
+            ));
+          },
+        ),
+        const SizedBox(height: 8),
+        Card(
+          elevation: 0,
+          color: scheme.surfaceContainerLow,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  switch (activeMode) {
+                    HdrMode.off =>
+                      'Preserves original SDR/HDR colors without enhancement or tone-mapping filters.',
+                    HdrMode.hdrEffect =>
+                      'Visual simulation of expanded dynamic range, contrast, and highlight detail. Works on standard SDR screens.',
+                    HdrMode.sdrToHdr =>
+                      'Converts 8-bit SDR into genuine 10-bit HDR10 (BT.2020 PQ color space and mastering metadata). Best on HDR screens.',
+                    HdrMode.preserveHdr => isSourceHdr
+                        ? 'Retains source 10-bit HDR primaries (BT.2020), transfer curve, and metadata without 8-bit downconversion.'
+                        : 'Source video is SDR. Original SDR colors will be preserved without modification.',
+                  },
+                  style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                ),
+                if (activeMode == HdrMode.hdrEffect) ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Text(
+                        'Effect Intensity: ${(_settings.hdrIntensity * 100).round()}%',
+                        style: theme.textTheme.labelMedium
+                            ?.copyWith(fontWeight: FontWeight.bold),
+                      ),
+                      const Spacer(),
+                      Text(
+                        _settings.hdrIntensity < 0.35
+                            ? 'Subtle'
+                            : _settings.hdrIntensity > 0.75
+                                ? 'Vivid'
+                                : 'Balanced',
+                        style: theme.textTheme.labelSmall
+                            ?.copyWith(color: scheme.primary),
+                      ),
+                    ],
+                  ),
+                  Slider(
+                    value: _settings.hdrIntensity,
+                    min: 0.1,
+                    max: 1.0,
+                    divisions: 18,
+                    label: '${(_settings.hdrIntensity * 100).round()}%',
+                    onChanged: (v) {
+                      _update(_settings.copyWith(
+                        hdrIntensity: v,
+                        clearPresetId: true,
+                      ));
+                    },
+                  ),
+                ],
+                if (activeMode == HdrMode.sdrToHdr &&
+                    _settings.videoCodec != VideoCodecOption.hevc) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: scheme.errorContainer.withValues(alpha: 0.6),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline, size: 18, color: scheme.error),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'SDR to HDR conversion requires HEVC (H.265) 10-bit encoding.',
+                            style: theme.textTheme.labelSmall
+                                ?.copyWith(color: scheme.onErrorContainer),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            _update(_settings.copyWith(
+                              videoCodec: VideoCodecOption.hevc,
+                              clearPresetId: true,
+                            ));
+                          },
+                          child: const Text('Use HEVC'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                if (activeMode == HdrMode.preserveHdr &&
+                    isSourceHdr &&
+                    _settings.videoCodec == VideoCodecOption.h264) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: scheme.errorContainer.withValues(alpha: 0.6),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.warning_amber_rounded, size: 18, color: scheme.error),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'H.264 is 8-bit and will downconvert 10-bit HDR to SDR. Switch to HEVC to preserve 10-bit HDR.',
+                            style: theme.textTheme.labelSmall
+                                ?.copyWith(color: scheme.onErrorContainer),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            _update(_settings.copyWith(
+                              videoCodec: VideoCodecOption.hevc,
+                              clearPresetId: true,
+                            ));
+                          },
+                          child: const Text('Use HEVC'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Advanced Settings Collapsible
   // -------------------------------------------------------------------------
   Widget _buildAdvancedSettingsSection(ThemeData theme) {
@@ -1048,6 +1264,7 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
         audioAction: _settings.audio,
         sourceAudioBitrate: media.audioStream?.bitRate,
         hasAudio: media.audioStream != null,
+        hdrMode: _settings.hdrMode,
       );
       estimatedSizeStr = '~${formatBytes(estimatedBytes)}';
     }
@@ -1113,6 +1330,29 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
                   style: TextStyle(fontSize: 12, color: scheme.onSecondaryContainer)),
               Text('$w×$h @ ${fps.toStringAsFixed(1)} fps',
                   style: TextStyle(fontSize: 12, color: scheme.onSecondaryContainer)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Color / Dynamic range:',
+                  style: TextStyle(fontSize: 12, color: scheme.onSecondaryContainer)),
+              Text(
+                switch (_settings.hdrMode) {
+                  HdrMode.off => video.isHdr ? 'Preserve HDR' : 'Standard SDR',
+                  HdrMode.hdrEffect =>
+                    'HDR Effect (${(_settings.hdrIntensity * 100).round()}%)',
+                  HdrMode.sdrToHdr => 'HDR10 (10-bit BT.2020)',
+                  HdrMode.preserveHdr =>
+                    video.isHdr ? 'HDR10 preserved' : 'Standard SDR',
+                },
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                  color: scheme.onSecondaryContainer,
+                ),
+              ),
             ],
           ),
         ],
@@ -1265,6 +1505,8 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
         crf: _settings.crf,
         speedPreset: _settings.speedPreset,
         quality: _settings.quality,
+        hdrMode: _settings.hdrMode,
+        hdrIntensity: _settings.hdrIntensity,
         isBuiltIn: false,
       );
 

@@ -224,6 +224,63 @@ class JobPlanner {
       '-map', '0:a?',
     ];
 
+    // Determine target pixel format and color parameters based on HDR mode
+    final is10BitTarget = (settings.hdrMode == HdrMode.sdrToHdr) ||
+        (settings.hdrMode == HdrMode.preserveHdr &&
+            video.isHdr &&
+            video.bitDepth >= 10 &&
+            codec == VideoCodecOption.hevc) ||
+        (settings.hdrMode == HdrMode.off &&
+            video.isHdr &&
+            video.bitDepth >= 10 &&
+            codec == VideoCodecOption.hevc);
+
+    final outPixFmt = is10BitTarget ? 'yuv420p10le' : 'yuv420p';
+    final colorArgs = <String>[];
+
+    if (settings.hdrMode == HdrMode.sdrToHdr) {
+      colorArgs.addAll([
+        '-pix_fmt', outPixFmt,
+        '-color_primaries', 'bt2020',
+        '-color_trc', 'smpte2084',
+        '-colorspace', 'bt2020nc',
+        '-color_range', 'tv',
+      ]);
+      if (!useHardware && swEncoder == 'libx265') {
+        colorArgs.addAll([
+          '-x265-params',
+          'hdr10-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400',
+        ]);
+      }
+    } else if ((settings.hdrMode == HdrMode.preserveHdr ||
+            settings.hdrMode == HdrMode.off) &&
+        video.isHdr) {
+      colorArgs.addAll(['-pix_fmt', outPixFmt]);
+      if (video.colorPrimaries != null && video.colorPrimaries!.isNotEmpty) {
+        colorArgs.addAll(['-color_primaries', video.colorPrimaries!]);
+      }
+      if (video.colorTransfer != null && video.colorTransfer!.isNotEmpty) {
+        colorArgs.addAll(['-color_trc', video.colorTransfer!]);
+      }
+      if (video.colorSpace != null && video.colorSpace!.isNotEmpty) {
+        colorArgs.addAll(['-colorspace', video.colorSpace!]);
+      }
+      if (video.colorRange != null && video.colorRange!.isNotEmpty) {
+        colorArgs.addAll(['-color_range', video.colorRange!]);
+      }
+      if (!useHardware && swEncoder == 'libx265') {
+        final prim = video.colorPrimaries ?? 'bt2020';
+        final trc = video.colorTransfer ?? 'smpte2084';
+        final matrix = video.colorSpace ?? 'bt2020nc';
+        colorArgs.addAll([
+          '-x265-params',
+          'hdr10-opt=1:repeat-headers=1:colorprim=$prim:transfer=$trc:colormatrix=$matrix',
+        ]);
+      }
+    } else {
+      colorArgs.addAll(['-pix_fmt', 'yuv420p']);
+    }
+
     if (useHardware) {
       kbps = resolveVideoBitrateKbps(
         settings: settings,
@@ -236,6 +293,7 @@ class JobPlanner {
           codec == VideoCodecOption.hevc ? 'hevc_mediacodec' : 'h264_mediacodec';
       args.addAll(['-c:v', hwName, '-b:v', '${kbps}k',
         '-maxrate', '${(kbps * 1.5).round()}k', '-bufsize', '${kbps * 2}k']);
+      args.addAll(colorArgs);
     } else if (useCrf) {
       // Software CRF rate control (modes A/C/E/G).
       args.addAll(['-c:v', swEncoder]);
@@ -248,7 +306,7 @@ class JobPlanner {
         final preset = _swPresetName[settings.speedPreset] ?? 'medium';
         args.addAll(['-preset', preset, '-crf', '${settings.crf}']);
       }
-      args.addAll(['-pix_fmt', 'yuv420p']);
+      args.addAll(colorArgs);
     } else {
       kbps = resolveVideoBitrateKbps(
         settings: settings,
@@ -265,7 +323,7 @@ class JobPlanner {
           '-maxrate', '${(kbps * 1.5).round()}k', '-bufsize', '${kbps * 2}k',
           '-preset', _swPresetName[settings.speedPreset] ?? 'medium']);
       }
-      args.addAll(['-pix_fmt', 'yuv420p']);
+      args.addAll(colorArgs);
     }
 
     // Explicit changes only — resolution/fps preserved unless the user asked.
@@ -277,6 +335,16 @@ class JobPlanner {
     }
     if (settings.frameRate != null) {
       filters.add('fps=${settings.frameRate}');
+    }
+    if (settings.hdrMode == HdrMode.hdrEffect) {
+      final intensity = settings.hdrIntensity.clamp(0.1, 1.0);
+      final c = (1.0 + 0.16 * intensity).toStringAsFixed(2);
+      final b = (0.015 * intensity).toStringAsFixed(3);
+      final s = (1.0 + 0.15 * intensity).toStringAsFixed(2);
+      final g = (1.0 + 0.05 * intensity).toStringAsFixed(2);
+      final u = (0.50 * intensity).toStringAsFixed(2);
+      filters.add('eq=contrast=$c:brightness=$b:saturation=$s:gamma=$g');
+      filters.add('unsharp=3:3:$u:3:3:0.0');
     }
     if (filters.isNotEmpty) args.addAll(['-vf', filters.join(',')]);
 
@@ -295,14 +363,20 @@ class JobPlanner {
       _ => useHardware ? 'H.264 (hardware)' : 'H.264 (software)',
     };
     final rateLabel = useCrf ? 'CRF ${settings.crf}' : null;
+    final hdrTag = switch (settings.hdrMode) {
+      HdrMode.hdrEffect => ' with HDR Effect (${(settings.hdrIntensity * 100).round()}%)',
+      HdrMode.sdrToHdr => ' [HDR10 10-bit conversion]',
+      HdrMode.preserveHdr => video.isHdr ? ' [HDR preserved]' : '',
+      HdrMode.off => '',
+    };
 
     final description = hasTargetSize
         ? 'Target size encode — $codecLabel at ~${kbps ?? 0} kbps for '
-            '${(settings.targetSizeBytes! / (1024 * 1024)).toStringAsFixed(1)} MB target.'
+            '${(settings.targetSizeBytes! / (1024 * 1024)).toStringAsFixed(1)} MB target$hdrTag.'
         : useCrf
-            ? 'Lossy re-encode — $codecLabel at $rateLabel, ${settings.speedPreset.label} speed. '
+            ? 'Lossy re-encode — $codecLabel at $rateLabel, ${settings.speedPreset.label} speed$hdrTag. '
                 'Lower CRF = better quality and a larger file. Not lossless.'
-            : 'Lossy re-encode — $codecLabel, ~${kbps ?? 0} kbps, ${settings.quality.label}. '
+            : 'Lossy re-encode — $codecLabel, ~${kbps ?? 0} kbps, ${settings.quality.label}$hdrTag. '
                 'Quality is high but this is not mathematically lossless.';
 
     return CompressionPlan(
@@ -331,6 +405,7 @@ class JobPlanner {
         audioAction: settings.audio,
         sourceAudioBitrate: media.audioStream?.bitRate,
         hasAudio: media.audioStream != null,
+        hdrMode: settings.hdrMode,
       );
     }
     final video = media.videoStream;
@@ -338,7 +413,7 @@ class JobPlanner {
     final h = targetHeight ?? settings.targetHeight ?? video?.height ?? 720;
     final f = fps ?? settings.frameRate ?? video?.frameRate ?? 30.0;
     return _estimatedBitrateKbps(w, h, f, settings.quality,
-        sourceVideoBitrate: video?.bitRate);
+        sourceVideoBitrate: video?.bitRate, hdrMode: settings.hdrMode);
   }
 
   /// Software encoder name actually present in the packaged build for
@@ -362,9 +437,10 @@ class JobPlanner {
     double fps,
     QualityPreset quality, {
     int? sourceVideoBitrate,
+    HdrMode hdrMode = HdrMode.off,
   }) =>
       _estimatedBitrateKbps(w, h, fps, quality,
-          sourceVideoBitrate: sourceVideoBitrate);
+          sourceVideoBitrate: sourceVideoBitrate, hdrMode: hdrMode);
 
   /// Estimated target bitrate (kbps) for [w]x[h]@fps. Capped below the source
   /// bitrate to avoid "compression" that increases size.
@@ -374,14 +450,19 @@ class JobPlanner {
     double fps,
     QualityPreset quality, {
     int? sourceVideoBitrate,
+    HdrMode hdrMode = HdrMode.off,
   }) {
-    final factor = _bitrateFactor[quality] ?? 0.008;
+    final baseFactor = _bitrateFactor[quality] ?? 0.008;
+    final factor = (hdrMode == HdrMode.sdrToHdr || hdrMode == HdrMode.preserveHdr)
+        ? baseFactor * 1.12
+        : baseFactor;
     var kbps = (w * h * fps * factor / 1000).round();
     if (sourceVideoBitrate != null && sourceVideoBitrate > 0) {
       final cap = (sourceVideoBitrate / 1000 * 0.85).round();
       if (kbps > cap) kbps = cap;
     }
-    if (kbps < 200) kbps = 200; // encoder floor for usable quality
+    final floor = (hdrMode == HdrMode.sdrToHdr || hdrMode == HdrMode.preserveHdr) ? 250 : 200;
+    if (kbps < floor) kbps = floor;
     return kbps;
   }
 
